@@ -42,27 +42,7 @@ Developers can still use `run.bat` to compile and run the app from source.
 - Right-click a server in the main list to refresh it directly or copy its
   IP:game-port address. Selecting a server or clicking the selected row again
   continues to refresh its live status.
-- Players are listed by frags, highest score first. Resized columns in the
-  server, favorites, details, and player tables are saved as they are changed.
-  The app also restores its window size, position, and server/details split
-  divider; the initial window size is 1260 by 744 pixels.
-- The main server list opens sorted by current player count, highest first.
-  Users can change the sort priority by clicking any column header.
-- Displays the required 333networks data attribution.
-- Caches each API response and blocks the same request for 7.5 minutes, in line
-  with 333networks API terms. Server-list search is local; live server status
-  and player data are queried directly from the game server.
+
 
 Direct UT99 status queries currently require an IPv4 address.
 
-## Run tests
-
-From the project folder, compile the app and tests, then run both test classes:
-
-```bat
-javac -encoding UTF-8 -d out src\main\java\ut99\*.java src\test\java\ut99\*.java
-java -cp out ut99.JsonParserTest
-java -cp out ut99.FavoriteStoreTest
-java -cp out ut99.AboutImageAssetsTest
-java -cp out ut99.GameServerQueryTest
-```
