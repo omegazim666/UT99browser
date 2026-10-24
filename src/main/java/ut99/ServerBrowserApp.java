@@ -17,9 +17,18 @@ import javax.swing.ListSelectionModel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
+import javax.swing.Timer;
 import javax.swing.UIManager;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableRowSorter;
+import javax.swing.SortOrder;
+import javax.swing.RowSorter;
+import javax.swing.event.ChangeEvent;
+import javax.swing.event.ListSelectionEvent;
+import javax.swing.event.TableColumnModelEvent;
+import javax.swing.event.TableColumnModelListener;
 import javax.imageio.ImageIO;
+import java.awt.datatransfer.StringSelection;
 import java.awt.BorderLayout;
 import java.awt.Desktop;
 import java.awt.Dimension;
@@ -27,34 +36,52 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridLayout;
 import java.awt.Image;
+import java.awt.Toolkit;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.awt.event.ActionEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Comparator;
+import java.util.prefs.BackingStoreException;
+import java.util.prefs.Preferences;
 
 public final class ServerBrowserApp {
     private static final int MAX_SERVER_RESULTS = 1000;
     private static final Path GAME_LOGO_PATH = Path.of("src", "img", "Giblogo-mirror.gif");
     private static final Path DISCORD_ICON_PATH = Path.of("src", "img", "discord.png");
     private static final URI DISCORD_INVITE = URI.create("https://discord.com/invite/5AG6Zj96PG");
+    private static final Preferences COLUMN_PREFERENCES =
+            Preferences.userNodeForPackage(ServerBrowserApp.class).node("column-widths");
 
     private final ApiClient apiClient = new ApiClient();
     private final JFrame frame = new JFrame("Unreal Tournament 99 Server Browser");
     private final JTextField searchField = new JTextField(28);
     private final JLabel statusLabel = new JLabel("Ready");
     private final JLabel detailHeading = new JLabel("Select a server to view its players");
+    private final JLabel selectedAddressLabel = new JLabel();
+    private final JButton copyAddressButton = new JButton("Copy");
+    private final Timer saveLayoutTimer = new Timer(500, event -> saveUiLayout());
     private final FavoriteStore favoriteStore = new FavoriteStore(
             Path.of(System.getProperty("user.home"), ".ut99-server-browser", "favorites.properties"));
     private final List<ServerEntry> currentServers = new ArrayList<>();
+    private final List<ServerEntry> allServers = new ArrayList<>();
     private final List<ServerEntry> favorites = new ArrayList<>();
+    private final Map<String, String> pingStatuses = new HashMap<>();
+    private final Map<String, Long> pingRequestIds = new HashMap<>();
     private final DefaultTableModel serverModel = new DefaultTableModel(
-            new Object[]{"Server", "Players", "Map", "Game type", "Country", "Address"}, 0) {
+            new Object[]{"Server", "Players", "Map", "Game type", "Country", "Address", "Live status"}, 0) {
         @Override
         public boolean isCellEditable(int row, int column) {
             return false;
@@ -62,7 +89,7 @@ public final class ServerBrowserApp {
     };
     private final JTable serverTable = new JTable(serverModel);
     private final DefaultTableModel favoriteModel = new DefaultTableModel(
-            new Object[]{"Server", "Players", "Map", "Game type", "Country", "Address"}, 0) {
+            new Object[]{"Server", "Players", "Map", "Game type", "Country", "Address", "Live status"}, 0) {
         @Override
         public boolean isCellEditable(int row, int column) {
             return false;
@@ -78,18 +105,22 @@ public final class ServerBrowserApp {
     };
     private final JTable detailTable = new JTable(detailModel);
     private final DefaultTableModel playerModel = new DefaultTableModel(
-            new Object[]{"Player", "Team", "Score (frags)", "Ping", "Mesh", "Skin", "Face", "Last update", "Misc"}, 0) {
+            new Object[]{"Player", "Team", "Score (frags)", "Ping", "Mesh", "Skin", "Face", "Misc"}, 0) {
         @Override
         public boolean isCellEditable(int row, int column) {
             return false;
         }
     };
     private final JTable playerTable = new JTable(playerModel);
+    private final JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
     private final JButton searchButton = new JButton("Search");
+    private final JButton pingButton = new JButton("Refresh server");
+    private final JButton queryAllButton = new JButton("Query all servers");
+    private SwingWorker<Void, ServerQueryUpdate> bulkQueryWorker;
+    private volatile boolean bulkQueryStopRequested;
     private String searchQuery = "";
     private int totalServers;
     private ServerEntry selectedServer;
-    private long detailRequestId;
 
     private ServerBrowserApp() {
         buildWindow();
@@ -114,20 +145,20 @@ public final class ServerBrowserApp {
     private void buildWindow() {
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setMinimumSize(new Dimension(1050, 680));
-        frame.setSize(1280, 820);
-        frame.setLocationByPlatform(true);
+        restoreWindowBounds();
 
         JPanel root = new JPanel(new BorderLayout(8, 8));
         root.setBorder(BorderFactory.createEmptyBorder(10, 10, 8, 10));
         root.add(buildToolbar(), BorderLayout.NORTH);
 
         serverTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        serverTable.setAutoCreateRowSorter(true);
+        configureMainServerSorter();
         serverTable.getSelectionModel().addListSelectionListener(event -> {
             if (!event.getValueIsAdjusting()) {
                 selectServer(serverTable, currentServers);
             }
         });
+        installSelectedServerRefresh(serverTable, currentServers);
         favoriteTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         favoriteTable.setAutoCreateRowSorter(true);
         favoriteTable.getSelectionModel().addListSelectionListener(event -> {
@@ -135,9 +166,17 @@ public final class ServerBrowserApp {
                 selectServer(favoriteTable, favorites);
             }
         });
-        detailTable.setAutoCreateRowSorter(true);
-        playerTable.setAutoCreateRowSorter(true);
-        playerTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        installSelectedServerRefresh(favoriteTable, favorites);
+        detailTable.setAutoCreateRowSorter(false);
+        playerTable.setAutoCreateRowSorter(false);
+        configureColumnWidths(serverTable, "servers", new int[]{245, 50, 140, 105, 50, 115, 100});
+        configureColumnWidths(favoriteTable, "favorites", new int[]{245, 50, 140, 105, 50, 115, 100});
+        configureColumnWidths(detailTable, "details", new int[]{175, 250});
+        configureColumnWidths(playerTable, "players", new int[]{130, 45, 85, 50, 110, 110, 60, 80});
+        listenForColumnResizing(serverTable);
+        listenForColumnResizing(favoriteTable);
+        listenForColumnResizing(detailTable);
+        listenForColumnResizing(playerTable);
         installFavoriteMenu(serverTable, currentServers, false);
         installFavoriteMenu(favoriteTable, favorites, true);
 
@@ -164,12 +203,15 @@ public final class ServerBrowserApp {
         detailHeading.setFont(detailHeading.getFont().deriveFont(Font.BOLD, 16f));
         detailPanel.add(detailHeading, BorderLayout.NORTH);
         JPanel detailContent = new JPanel(new GridLayout(2, 1, 4, 8));
-        detailContent.add(wrapTable("Server details", detailTable));
+        detailContent.add(wrapServerDetailsTable());
         detailContent.add(wrapTable("Players and scores (frags)", playerTable));
         detailPanel.add(detailContent, BorderLayout.CENTER);
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, serverTabs, detailPanel);
-        splitPane.setResizeWeight(0.57);
+        splitPane.setLeftComponent(serverTabs);
+        splitPane.setRightComponent(detailPanel);
+        splitPane.setResizeWeight(0.67);
+        splitPane.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY,
+                event -> scheduleLayoutSave());
         root.add(splitPane, BorderLayout.CENTER);
 
         JPanel footer = new JPanel(new BorderLayout(8, 0));
@@ -179,7 +221,43 @@ public final class ServerBrowserApp {
         root.add(footer, BorderLayout.SOUTH);
 
         frame.setContentPane(root);
+        frame.addComponentListener(new ComponentAdapter() {
+            @Override
+            public void componentResized(ComponentEvent event) {
+                scheduleLayoutSave();
+            }
+
+            @Override
+            public void componentMoved(ComponentEvent event) {
+                scheduleLayoutSave();
+            }
+        });
+        frame.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent event) {
+                saveUiLayout();
+            }
+        });
+        copyAddressButton.setEnabled(false);
+        queryAllButton.setEnabled(false);
+        copyAddressButton.setToolTipText("Copy the selected server IP and game port");
+        copyAddressButton.addActionListener(event -> copySelectedAddress());
         searchButton.addActionListener(this::search);
+        pingButton.addActionListener(event -> {
+            if (selectedServer != null) {
+                loadServerStatus(selectedServer);
+            }
+        });
+        pingButton.setEnabled(false);
+        queryAllButton.addActionListener(event -> {
+            if (bulkQueryWorker == null) {
+                queryAllServers();
+            } else {
+                bulkQueryStopRequested = true;
+                queryAllButton.setText("Stopping...");
+                queryAllButton.setEnabled(false);
+            }
+        });
         searchField.addActionListener(this::search);
     }
 
@@ -189,7 +267,8 @@ public final class ServerBrowserApp {
         searchControls.add(new JLabel("Search servers:"));
         searchControls.add(searchField);
         searchControls.add(searchButton);
-        searchControls.add(new JLabel("(name, map, game type, or any API search term)"));
+        searchControls.add(queryAllButton);
+        searchControls.add(new JLabel("(searches the server list loaded at startup)"));
         JButton aboutButton = new JButton("About");
         aboutButton.addActionListener(event -> showAboutDialog());
         toolbar.add(searchControls, BorderLayout.WEST);
@@ -204,8 +283,130 @@ public final class ServerBrowserApp {
         return panel;
     }
 
+    private static void configureColumnWidths(JTable table, String tableKey, int[] defaults) {
+        table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
+        for (int column = 0; column < table.getColumnModel().getColumnCount(); column++) {
+            javax.swing.table.TableColumn tableColumn = table.getColumnModel().getColumn(column);
+            int modelIndex = tableColumn.getModelIndex();
+            int width = COLUMN_PREFERENCES.getInt(tableKey + "." + modelIndex, defaults[modelIndex]);
+            tableColumn.setPreferredWidth(width);
+            tableColumn.setWidth(width);
+        }
+    }
+
+    private void listenForColumnResizing(JTable table) {
+        table.getColumnModel().addColumnModelListener(new TableColumnModelListener() {
+            @Override
+            public void columnMarginChanged(ChangeEvent event) {
+                scheduleLayoutSave();
+            }
+
+            @Override
+            public void columnAdded(TableColumnModelEvent event) {
+            }
+
+            @Override
+            public void columnRemoved(TableColumnModelEvent event) {
+            }
+
+            @Override
+            public void columnMoved(TableColumnModelEvent event) {
+                scheduleLayoutSave();
+            }
+
+            @Override
+            public void columnSelectionChanged(ListSelectionEvent event) {
+            }
+        });
+    }
+
+    private void scheduleLayoutSave() {
+        saveLayoutTimer.setRepeats(false);
+        saveLayoutTimer.restart();
+    }
+
+    private void saveUiLayout() {
+        try {
+            saveColumnWidths(serverTable, "servers");
+            saveColumnWidths(favoriteTable, "favorites");
+            saveColumnWidths(detailTable, "details");
+            saveColumnWidths(playerTable, "players");
+            if (frame.getExtendedState() == JFrame.NORMAL) {
+                COLUMN_PREFERENCES.putInt("window.x", frame.getX());
+                COLUMN_PREFERENCES.putInt("window.y", frame.getY());
+                COLUMN_PREFERENCES.putInt("window.width", frame.getWidth());
+                COLUMN_PREFERENCES.putInt("window.height", frame.getHeight());
+            }
+            COLUMN_PREFERENCES.putInt("split.divider", splitPane.getDividerLocation());
+            COLUMN_PREFERENCES.flush();
+        } catch (BackingStoreException e) {
+            statusLabel.setText("Could not save table column widths: " + e.getMessage());
+        }
+    }
+
+    private void restoreWindowBounds() {
+        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
+        int width = Math.min(COLUMN_PREFERENCES.getInt("window.width", 1260), screen.width);
+        int height = Math.min(COLUMN_PREFERENCES.getInt("window.height", 744), screen.height);
+        width = Math.max(Math.min(width, screen.width), Math.min(1050, screen.width));
+        height = Math.max(Math.min(height, screen.height), Math.min(680, screen.height));
+        int x = COLUMN_PREFERENCES.getInt("window.x", (screen.width - width) / 2);
+        int y = COLUMN_PREFERENCES.getInt("window.y", (screen.height - height) / 2);
+        x = Math.max(0, Math.min(x, screen.width - width));
+        y = Math.max(0, Math.min(y, screen.height - height));
+        frame.setBounds(x, y, width, height);
+    }
+
+    private static void saveColumnWidths(JTable table, String tableKey) {
+        for (int column = 0; column < table.getColumnModel().getColumnCount(); column++) {
+            javax.swing.table.TableColumn tableColumn = table.getColumnModel().getColumn(column);
+            COLUMN_PREFERENCES.putInt(tableKey + "." + tableColumn.getModelIndex(), tableColumn.getWidth());
+        }
+    }
+
+    private JPanel wrapServerDetailsTable() {
+        JPanel panel = new JPanel(new BorderLayout(4, 4));
+        JPanel heading = new JPanel(new BorderLayout(8, 0));
+        JLabel ipLabel = new JLabel("IP:");
+        ipLabel.setFont(ipLabel.getFont().deriveFont(Font.BOLD));
+        JPanel addressLine = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        addressLine.add(ipLabel);
+        addressLine.add(selectedAddressLabel);
+        addressLine.add(copyAddressButton);
+        addressLine.add(pingButton);
+        heading.add(addressLine, BorderLayout.NORTH);
+        heading.add(new JLabel("Server details"), BorderLayout.SOUTH);
+        panel.add(heading, BorderLayout.NORTH);
+        panel.add(new JScrollPane(detailTable), BorderLayout.CENTER);
+        pingButton.setToolTipText("Refresh the selected server directly; no 333networks request is made.");
+        return panel;
+    }
+
+    private void copySelectedAddress() {
+        if (selectedServer == null) {
+            return;
+        }
+        copyServerAddress(selectedServer);
+    }
+
+    private void copyServerAddress(ServerEntry server) {
+        try {
+            Toolkit.getDefaultToolkit().getSystemClipboard()
+                    .setContents(new StringSelection(server.address()), null);
+            statusLabel.setText("Copied " + server.address() + " to clipboard");
+        } catch (IllegalStateException e) {
+            showError("Could not copy the server address: " + e.getMessage());
+        }
+    }
+
     private void show() {
         frame.setVisible(true);
+        int savedDivider = COLUMN_PREFERENCES.getInt("split.divider", -1);
+        if (savedDivider >= 0) {
+            splitPane.setDividerLocation(savedDivider);
+        } else {
+            splitPane.setDividerLocation(0.67);
+        }
         loadFavorites();
         loadServers();
     }
@@ -216,7 +417,9 @@ public final class ServerBrowserApp {
             showError("Search terms must be 90 characters or fewer.");
             return;
         }
-        loadServers();
+        displayServers(filterServers(searchQuery));
+        statusLabel.setText(String.format("Showing %,d of %,d servers from startup list",
+                currentServers.size(), totalServers));
     }
 
     private void loadServers() {
@@ -232,12 +435,15 @@ public final class ServerBrowserApp {
                 try {
                     ApiClient.ServerPage result = get();
                     totalServers = result.total;
-                    displayServers(result.servers);
+                    allServers.clear();
+                    allServers.addAll(result.servers);
+                    displayServers(filterServers(searchQuery));
                     statusLabel.setText(String.format("Showing %,d of %,d servers | %,d players",
-                            result.servers.size(), totalServers, result.players));
+                            currentServers.size(), totalServers, result.players));
                 } catch (Exception e) {
                     showError(messageFor(e));
                 } finally {
+                    queryAllButton.setEnabled(!allServers.isEmpty());
                     setBusy(false, null);
                 }
             }
@@ -256,10 +462,42 @@ public final class ServerBrowserApp {
                     server.value("mapname", ""),
                     server.value("gametype", ""),
                     server.value("country", ""),
-                    server.address()
+                    server.address(),
+                    pingStatuses.getOrDefault(server.address(), "Not checked")
             });
         }
         clearDetails();
+    }
+
+    private void configureMainServerSorter() {
+        TableRowSorter<DefaultTableModel> sorter = new TableRowSorter<>(serverModel);
+        sorter.setComparator(1, (left, right) -> Integer.compare(
+                playerCount(String.valueOf(left)), playerCount(String.valueOf(right))));
+        sorter.setSortKeys(List.of(new RowSorter.SortKey(1, SortOrder.DESCENDING)));
+        serverTable.setRowSorter(sorter);
+    }
+
+    static int playerCount(String value) {
+        int separator = value.indexOf('/');
+        String count = (separator < 0 ? value : value.substring(0, separator)).trim();
+        try {
+            return Integer.parseInt(count);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private List<ServerEntry> filterServers(String query) {
+        List<ServerEntry> matches = new ArrayList<>();
+        String normalizedQuery = query.toLowerCase(java.util.Locale.ROOT);
+        for (ServerEntry server : allServers) {
+            if (query.isEmpty() || server.fields.values().stream()
+                    .anyMatch(value -> value != null
+                            && String.valueOf(value).toLowerCase(java.util.Locale.ROOT).contains(normalizedQuery))) {
+                matches.add(server);
+            }
+        }
+        return matches;
     }
 
     private void selectServer(JTable table, List<ServerEntry> source) {
@@ -270,20 +508,51 @@ public final class ServerBrowserApp {
         }
         int modelRow = table.convertRowIndexToModel(selectedRow);
         selectedServer = source.get(modelRow);
-        detailHeading.setText(selectedServer.value("hostname", "Unnamed server"));
+        pingButton.setEnabled(bulkQueryWorker == null);
+        selectedAddressLabel.setText(selectedServer.address());
+        copyAddressButton.setEnabled(true);
+        detailHeading.setText(selectedServer.address() + " — "
+                + selectedServer.value("hostname", "Unnamed server"));
         detailModel.setRowCount(0);
         playerModel.setRowCount(0);
-        for (Map.Entry<String, Object> entry : selectedServer.fields.entrySet()) {
-            if (!entry.getKey().startsWith("player_")) {
-                detailModel.addRow(new Object[]{entry.getKey(), displayValue(entry.getValue())});
+        detailModel.addRow(new Object[]{"Live status", "Querying game server..."});
+        loadServerStatus(selectedServer);
+    }
+
+    private void installSelectedServerRefresh(JTable table, List<ServerEntry> source) {
+        table.addMouseListener(new MouseAdapter() {
+            private ServerEntry serverSelectedOnPress;
+
+            @Override
+            public void mousePressed(MouseEvent event) {
+                int row = table.rowAtPoint(event.getPoint());
+                serverSelectedOnPress = row >= 0 && table.getSelectedRow() == row
+                        ? source.get(table.convertRowIndexToModel(row))
+                        : null;
             }
-        }
-        loadDetails(selectedServer);
+
+            @Override
+            public void mouseReleased(MouseEvent event) {
+                if (!SwingUtilities.isLeftMouseButton(event)) {
+                    return;
+                }
+                int row = table.rowAtPoint(event.getPoint());
+                if (row < 0 || table.getSelectedRow() != row || serverSelectedOnPress == null) {
+                    return;
+                }
+                ServerEntry server = source.get(table.convertRowIndexToModel(row));
+                if (server == selectedServer && server == serverSelectedOnPress) {
+                    loadServerStatus(server);
+                }
+            }
+        });
     }
 
     private void clearSelectedServer() {
         selectedServer = null;
-        detailRequestId++;
+        selectedAddressLabel.setText("");
+        copyAddressButton.setEnabled(false);
+        pingButton.setEnabled(false);
         detailHeading.setText("Select a server to view its players");
         detailModel.setRowCount(0);
         playerModel.setRowCount(0);
@@ -293,60 +562,284 @@ public final class ServerBrowserApp {
         clearSelectedServer();
     }
 
-    private void loadDetails(ServerEntry server) {
-        long requestId = ++detailRequestId;
-        statusLabel.setText("Loading player details for " + server.value("hostname", server.address()) + "...");
-        detailHeading.setText(server.value("hostname", "Unnamed server") + " — loading details...");
-        new SwingWorker<Map<String, Object>, Void>() {
+    private void loadServerStatus(ServerEntry server) {
+        if (bulkQueryWorker != null) {
+            return;
+        }
+        String address = server.address();
+        long requestId = pingRequestIds.getOrDefault(address, 0L) + 1;
+        pingRequestIds.put(address, requestId);
+        pingStatuses.put(server.address(), "Querying...");
+        updatePingStatus(server);
+        pingButton.setEnabled(false);
+        if (selectedServer == server) {
+            detailModel.setRowCount(0);
+            detailModel.addRow(new Object[]{"Live status", "Querying game server..."});
+            playerModel.setRowCount(0);
+            statusLabel.setText("Querying UT99 server at " + server.address() + "...");
+        }
+        new SwingWorker<GameServerQuery.Result, Void>() {
             @Override
-            protected Map<String, Object> doInBackground() throws Exception {
-                return apiClient.fetchDetails(server);
+            protected GameServerQuery.Result doInBackground() throws Exception {
+                return GameServerQuery.query(server, 3000);
             }
 
             @Override
             protected void done() {
+                if (!Long.valueOf(requestId).equals(pingRequestIds.get(address))) {
+                    return;
+                }
                 try {
-                    Map<String, Object> details = get();
-                    if (requestId == detailRequestId && selectedServer == server) {
-                        displayDetails(details);
-                        statusLabel.setText(playerModel.getRowCount() == 0
-                                ? "No player data reported for " + server.address()
-                                : "Loaded " + playerModel.getRowCount() + " player(s) for " + server.address());
+                    GameServerQuery.Result result = get();
+                    applyServerStatus(server, result.fields);
+                    pingStatuses.put(server.address(), "Online (" + result.roundTripMillis + " ms)");
+                    updatePingStatus(server);
+                    if (selectedServer == server) {
+                        displayDetails(server, result.fields, result.roundTripMillis);
+                        detailHeading.setText(server.address() + " — "
+                                + result.fields.getOrDefault("hostname",
+                                        server.value("hostname", "Unnamed server")));
+                        statusLabel.setText("Updated live status for " + server.address()
+                                + " in " + result.roundTripMillis + " ms");
                     }
                 } catch (Exception e) {
-                    if (requestId == detailRequestId && selectedServer == server) {
-                        statusLabel.setText("Could not load player details");
-                        JOptionPane.showMessageDialog(frame, messageFor(e), "333networks API error",
-                                JOptionPane.ERROR_MESSAGE);
+                    pingStatuses.put(server.address(), "No status response");
+                    updatePingStatus(server);
+                    if (selectedServer == server) {
+                        String error = messageFor(e);
+                        statusLabel.setText("Live query failed for " + server.address() + ": " + error);
+                        detailModel.setValueAt("Query failed: " + error, 0, 1);
                     }
+                } finally {
+                    pingRequestIds.remove(address, requestId);
+                    pingButton.setEnabled(selectedServer != null);
                 }
             }
         }.execute();
     }
 
-    private void displayDetails(Map<String, Object> details) {
-        detailModel.setRowCount(0);
-        playerModel.setRowCount(0);
-        detailHeading.setText(String.valueOf(details.getOrDefault("hostname", "Server details")));
-        for (Map.Entry<String, Object> entry : details.entrySet()) {
-            if (entry.getKey().startsWith("player_") && entry.getValue() instanceof Map) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> player = (Map<String, Object>) entry.getValue();
-                playerModel.addRow(new Object[]{
-                        displayValue(player.get("name")),
-                        displayValue(player.get("team")),
-                        displayValue(player.get("frags")),
-                        displayValue(player.get("mesh")),
-                        displayValue(player.get("skin")),
-                        displayValue(player.get("face")),
-                        displayValue(player.get("ping")),
-                        displayValue(player.get("dt_player")),
-                        displayValue(player.get("misc"))
-                });
-            } else {
-                detailModel.addRow(new Object[]{entry.getKey(), displayValue(entry.getValue())});
+    private void queryAllServers() {
+        if (allServers.isEmpty()) {
+            statusLabel.setText("No servers are loaded to query.");
+            return;
+        }
+        List<ServerEntry> serversToQuery = new ArrayList<>(allServers);
+        int total = serversToQuery.size();
+        queryAllButton.setText("Cancel queries");
+        pingButton.setEnabled(false);
+        bulkQueryWorker = new SwingWorker<Void, ServerQueryUpdate>() {
+            private int completed;
+            private int successful;
+            private int failed;
+
+            @Override
+            protected Void doInBackground() {
+                int attempted = 0;
+                for (ServerEntry server : serversToQuery) {
+                    if (bulkQueryStopRequested) {
+                        break;
+                    }
+                    try {
+                        publish(new ServerQueryUpdate(server, GameServerQuery.query(server, 1000), null));
+                    } catch (Exception e) {
+                        publish(new ServerQueryUpdate(server, null, messageFor(e)));
+                    }
+                    attempted++;
+                    if (attempted < total && !bulkQueryStopRequested) {
+                        try {
+                            Thread.sleep(100);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }
+                return null;
+            }
+
+            @Override
+            protected void process(List<ServerQueryUpdate> updates) {
+                for (ServerQueryUpdate update : updates) {
+                    if (update.result == null) {
+                        failed++;
+                        pingStatuses.put(update.server.address(), "No status response");
+                        if (selectedServer == update.server) {
+                            detailModel.setRowCount(0);
+                            detailModel.addRow(new Object[]{"Live status", "Query failed: " + update.error});
+                        }
+                    } else {
+                        successful++;
+                        applyServerStatus(update.server, update.result.fields);
+                        pingStatuses.put(update.server.address(),
+                                "Online (" + update.result.roundTripMillis + " ms)");
+                        if (selectedServer == update.server) {
+                            displayDetails(update.server, update.result.fields, update.result.roundTripMillis);
+                        }
+                    }
+                    updatePingStatus(update.server);
+                    completed++;
+                    statusLabel.setText(String.format("Queried %,d of %,d servers | %,d online | %,d no response",
+                            completed, total, successful, failed));
+                }
+            }
+
+            @Override
+            protected void done() {
+                boolean cancelled = bulkQueryStopRequested;
+                bulkQueryWorker = null;
+                bulkQueryStopRequested = false;
+                queryAllButton.setText("Query all servers");
+                queryAllButton.setEnabled(!allServers.isEmpty());
+                pingButton.setEnabled(selectedServer != null);
+                statusLabel.setText(String.format("%s %,d of %,d servers | %,d online | %,d no response",
+                        cancelled ? "Stopped querying" : "Finished querying",
+                        completed, total, successful, failed));
+            }
+        };
+        statusLabel.setText("Querying " + total + " loaded servers directly...");
+        bulkQueryWorker.execute();
+    }
+
+    private static final class ServerQueryUpdate {
+        final ServerEntry server;
+        final GameServerQuery.Result result;
+        final String error;
+
+        ServerQueryUpdate(ServerEntry server, GameServerQuery.Result result, String error) {
+            this.server = server;
+            this.result = result;
+            this.error = error;
+        }
+    }
+
+    private void updatePingStatus(ServerEntry server) {
+        updatePingStatus(currentServers, serverModel, server);
+        updatePingStatus(favorites, favoriteModel, server);
+    }
+
+    private void updatePingStatus(List<ServerEntry> source, DefaultTableModel model, ServerEntry server) {
+        for (int row = 0; row < source.size(); row++) {
+            if (source.get(row).address().equalsIgnoreCase(server.address())) {
+                model.setValueAt(pingStatuses.get(server.address()), row, 6);
             }
         }
+    }
+
+    private void applyServerStatus(ServerEntry server, Map<String, String> fields) {
+        for (String key : new String[]{"hostname", "mapname", "gametype", "numplayers", "maxplayers"}) {
+            String value = fields.get(key);
+            if (value != null) {
+                server.fields.put(key, value);
+            }
+        }
+        updateServerRow(currentServers, serverModel, server);
+        updateServerRow(favorites, favoriteModel, server);
+    }
+
+    private void updateServerRow(List<ServerEntry> source, DefaultTableModel model, ServerEntry updatedServer) {
+        for (int row = 0; row < source.size(); row++) {
+            ServerEntry server = source.get(row);
+            if (server.address().equalsIgnoreCase(updatedServer.address())) {
+                server.fields.putAll(updatedServer.fields);
+                model.setValueAt(server.value("hostname", "Unnamed server"), row, 0);
+                model.setValueAt(server.value("numplayers", "0") + " / " + server.value("maxplayers", "?"),
+                        row, 1);
+                model.setValueAt(server.value("mapname", ""), row, 2);
+                model.setValueAt(server.value("gametype", ""), row, 3);
+                model.setValueAt(server.address(), row, 5);
+            }
+        }
+    }
+
+    private void displayDetails(ServerEntry server, Map<String, String> details, long roundTripMillis) {
+        detailModel.setRowCount(0);
+        playerModel.setRowCount(0);
+        detailHeading.setText(server.address() + " — "
+                + details.getOrDefault("hostname", server.value("hostname", "Server details")));
+        detailModel.addRow(new Object[]{"Data source", "Live UT99 server query"});
+        detailModel.addRow(new Object[]{"Query response time", roundTripMillis + " ms"});
+
+        String[][] preferredFields = {
+                {"hostname", "Server"},
+                {"mapname", "Map"},
+                {"gametype", "Game type"},
+                {"numplayers", "Players"},
+                {"maxplayers", "Max players"},
+                {"password", "Password protected"},
+                {"gamever", "Game version"}
+        };
+        for (String[] field : preferredFields) {
+            String value = details.get(field[0]);
+            if (value != null) {
+                detailModel.addRow(new Object[]{field[1], value});
+            }
+        }
+
+        details.entrySet().stream()
+                .filter(entry -> !isDisplayedDetailField(entry.getKey()))
+                .filter(entry -> !entry.getKey().matches(".*_\\d+$"))
+                .filter(entry -> !isUpdateTimestampField(entry.getKey()))
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> detailModel.addRow(new Object[]{entry.getKey(), entry.getValue()}));
+
+        Map<Integer, Map<String, String>> players = new java.util.TreeMap<>();
+        for (Map.Entry<String, String> entry : details.entrySet()) {
+            java.util.regex.Matcher playerField = java.util.regex.Pattern
+                    .compile("^(.*)_(\\d+)$").matcher(entry.getKey());
+            if (playerField.matches()) {
+                int playerId = Integer.parseInt(playerField.group(2));
+                players.computeIfAbsent(playerId, ignored -> new LinkedHashMap<>())
+                        .put(playerField.group(1), entry.getValue());
+            }
+        }
+        List<Map<String, String>> sortedPlayers = sortPlayersByScore(new ArrayList<>(players.values()));
+        for (Map<String, String> player : sortedPlayers) {
+            playerModel.addRow(new Object[]{
+                    player.getOrDefault("playername", player.getOrDefault("player", "")),
+                    player.getOrDefault("team", ""),
+                    player.getOrDefault("frags", ""),
+                    player.getOrDefault("ping", ""),
+                    player.getOrDefault("mesh", ""),
+                    player.getOrDefault("skin", ""),
+                    player.getOrDefault("face", ""),
+                    player.getOrDefault("misc", "")
+            });
+        }
+    }
+
+    static List<Map<String, String>> sortPlayersByScore(List<Map<String, String>> players) {
+        players.sort(Comparator
+                .comparingInt((Map<String, String> player) -> playerScore(player.get("frags")))
+                .reversed()
+                .thenComparing(player -> player.getOrDefault("playername",
+                        player.getOrDefault("player", "")), String.CASE_INSENSITIVE_ORDER));
+        return players;
+    }
+
+    private static int playerScore(String score) {
+        if (score == null) {
+            return Integer.MIN_VALUE;
+        }
+        try {
+            return Integer.parseInt(score.trim());
+        } catch (NumberFormatException e) {
+            return Integer.MIN_VALUE;
+        }
+    }
+
+    private static boolean isDisplayedDetailField(String key) {
+        for (String field : new String[]{"hostname", "mapname", "gametype", "numplayers", "maxplayers",
+                "password", "gamever"}) {
+            if (field.equals(key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isUpdateTimestampField(String key) {
+        String normalized = key.replace("_", "").replace(" ", "").toLowerCase(java.util.Locale.ROOT);
+        return normalized.startsWith("dt") || normalized.contains("update");
     }
 
     private void setBusy(boolean busy, String message) {
@@ -391,6 +884,16 @@ public final class ServerBrowserApp {
                 ServerEntry server = source.get(table.convertRowIndexToModel(row));
                 boolean isFavorite = containsFavorite(server);
                 JPopupMenu menu = new JPopupMenu();
+                if (!favoritesView) {
+                    javax.swing.JMenuItem refresh = new javax.swing.JMenuItem("Refresh selected server");
+                    refresh.setEnabled(bulkQueryWorker == null);
+                    refresh.addActionListener(action -> loadServerStatus(server));
+                    menu.add(refresh);
+                    javax.swing.JMenuItem copyAddress = new javax.swing.JMenuItem("Copy IP");
+                    copyAddress.addActionListener(action -> copyServerAddress(server));
+                    menu.add(copyAddress);
+                    menu.addSeparator();
+                }
                 if (favoritesView || isFavorite) {
                     javax.swing.JMenuItem remove = new javax.swing.JMenuItem("Remove from favorites");
                     remove.addActionListener(action -> removeFavorite(server));
@@ -468,7 +971,8 @@ public final class ServerBrowserApp {
                     server.value("mapname", ""),
                     server.value("gametype", ""),
                     server.value("country", ""),
-                    server.address()
+                    server.address(),
+                    pingStatuses.getOrDefault(server.address(), "Not checked")
             });
         }
     }
