@@ -43,5 +43,4 @@ source.
 - Right-click a server in the main list to refresh it directly or copy its
   IP:game-port address. Selecting a server or clicking the selected row again
   continues to refresh its live status.
-
 Direct UT99 status queries currently require an IPv4 address.
