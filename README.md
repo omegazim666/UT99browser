@@ -36,6 +36,10 @@ source.
 - Use **File > Save list** and **File > Load list** to export or import `.lst`
   favorite lists; loading can replace or merge favorites and avoids duplicate
   server addresses.
+- Use **File > Favorites Sync** to fetch favorites from or sync favorites to the
+  UT99 game browser. Browse to `UnrealTournament.ini` and choose whether to
+  merge or replace the destination list; merge avoids duplicate server
+  addresses.
 - Choose **Themes > Default** or **Dark** to switch the interface colors. The
   selected theme is marked with a check and remembered between launches.
 - Shows the last direct-query result in the server and favorites tables. UT99's
@@ -46,7 +50,8 @@ source.
 - Right-click servers to add them to a Favorites tab; favorites are saved between
   launches in `.ut99-server-browser\favorites.properties` under your user home
   folder and can be removed from the same context menu.
-- Open the About window for the game logo and Zim's Discord feedback link.
+- Open the **About** menu beside Themes for the game logo and Zim's Discord
+  feedback link.
 - About-window images load from `src\img` and do not need an internet connection.
 - View server address, current/max players, map, game type, and country in the
   list; the detail view keeps IP:Port first and player columns in a fixed order.

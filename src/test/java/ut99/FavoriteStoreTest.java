@@ -29,7 +29,11 @@ public final class FavoriteStoreTest {
             fields.put("favoriteDescription", "My custom server label");
             fields.put("autoUpdateDescription", false);
             fields.put("queryport", 7779);
-            store.save(List.of(new ServerEntry(fields)));
+            Map<String, Object> duplicateFields = new LinkedHashMap<>(fields);
+            duplicateFields.put("ip", "082.165.208.134");
+            duplicateFields.put("hostport", "07777");
+            duplicateFields.put("hostname", "Duplicate server");
+            store.save(List.of(new ServerEntry(fields), new ServerEntry(duplicateFields)));
 
             List<ServerEntry> loaded = new FavoriteStore(file).load();
             require(loaded.size() == 1, "favorite count");
@@ -84,9 +88,19 @@ public final class FavoriteStoreTest {
                 List.of(existing), List.of(duplicateImported, newImported), false);
         require(replaced.size() == 2, "replace removes imported duplicates");
         require(replaced.get(0) == duplicateImported, "replace uses imported favorite");
+
+        List<ServerEntry> normalizedDuplicates = FavoriteStore.combineFavorites(
+                List.of(server("082.165.208.134", "07777", "Padded address")),
+                List.of(server("82.165.208.134", 7777, "Canonical address")), true);
+        require(normalizedDuplicates.size() == 1,
+                "merge treats equivalent numeric IP and port spellings as duplicates");
     }
 
     private static ServerEntry server(String ip, int port, String hostname) {
+        return server(ip, Integer.toString(port), hostname);
+    }
+
+    private static ServerEntry server(String ip, String port, String hostname) {
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("ip", ip);
         fields.put("hostport", port);

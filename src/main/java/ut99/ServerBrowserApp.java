@@ -393,10 +393,7 @@ public final class ServerBrowserApp {
         searchControls.add(searchField);
         searchControls.add(searchButton);
         searchControls.add(queryAllButton);
-        JButton aboutButton = new JButton("About");
-        aboutButton.addActionListener(event -> showAboutDialog());
         toolbar.add(searchControls, BorderLayout.WEST);
-        toolbar.add(aboutButton, BorderLayout.EAST);
         return toolbar;
     }
 
@@ -946,7 +943,7 @@ public final class ServerBrowserApp {
 
     private void updatePingStatus(List<ServerEntry> source, DefaultTableModel model, ServerEntry server) {
         for (int row = 0; row < source.size(); row++) {
-            if (source.get(row).address().equalsIgnoreCase(server.address())) {
+            if (source.get(row).normalizedAddress().equals(server.normalizedAddress())) {
                 model.setValueAt(pingStatuses.get(server.address()), row, 6);
             }
         }
@@ -976,7 +973,7 @@ public final class ServerBrowserApp {
     private void updateServerRow(List<ServerEntry> source, DefaultTableModel model, ServerEntry updatedServer) {
         for (int row = 0; row < source.size(); row++) {
             ServerEntry server = source.get(row);
-            if (server.address().equalsIgnoreCase(updatedServer.address())) {
+            if (server.normalizedAddress().equals(updatedServer.normalizedAddress())) {
                 server.fields.putAll(updatedServer.fields);
                 model.setValueAt(model == favoriteModel
                                 ? server.value("favoriteDescription",
@@ -1145,6 +1142,9 @@ public final class ServerBrowserApp {
         loadList.addActionListener(event -> loadFavoriteList());
         fileMenu.add(saveList);
         fileMenu.add(loadList);
+        JMenuItem favoritesSync = new JMenuItem("Favorites Sync...");
+        favoritesSync.addActionListener(event -> showFavoritesSyncDialog());
+        fileMenu.add(favoritesSync);
         menuBar.add(fileMenu);
 
         JMenu themesMenu = new JMenu("Themes");
@@ -1158,6 +1158,11 @@ public final class ServerBrowserApp {
             themeMenuItems.put(theme, themeItem);
         }
         menuBar.add(themesMenu);
+        JMenu aboutMenu = new JMenu("About");
+        JMenuItem about = new JMenuItem("About UT99 Browser...");
+        about.addActionListener(event -> showAboutDialog());
+        aboutMenu.add(about);
+        menuBar.add(aboutMenu);
         return menuBar;
     }
 
@@ -1533,6 +1538,187 @@ public final class ServerBrowserApp {
         return chooser;
     }
 
+    private void showFavoritesSyncDialog() {
+        JDialog dialog = new JDialog(frame, "Favorites Sync", true);
+        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+
+        JTextField iniPathField = new JTextField(COLUMN_PREFERENCES.get("gameIniPath", ""), 38);
+        JButton browseButton = new JButton("Browse...");
+        JPanel pathPanel = new JPanel(new BorderLayout(6, 0));
+        pathPanel.add(iniPathField, BorderLayout.CENTER);
+        pathPanel.add(browseButton, BorderLayout.EAST);
+
+        JPanel content = new JPanel(new GridBagLayout());
+        content.setBorder(BorderFactory.createEmptyBorder(12, 12, 8, 12));
+        GridBagConstraints guidanceConstraints = new GridBagConstraints();
+        guidanceConstraints.gridx = 0;
+        guidanceConstraints.gridy = 0;
+        guidanceConstraints.gridwidth = 2;
+        guidanceConstraints.anchor = GridBagConstraints.WEST;
+        guidanceConstraints.insets = new Insets(0, 4, 8, 4);
+        content.add(new JLabel("Close UT99 before syncing so it does not overwrite INI changes."),
+                guidanceConstraints);
+        GridBagConstraints labelConstraints = new GridBagConstraints();
+        labelConstraints.gridx = 0;
+        labelConstraints.gridy = 1;
+        labelConstraints.anchor = GridBagConstraints.WEST;
+        labelConstraints.insets = new Insets(4, 4, 8, 8);
+        content.add(new JLabel("UnrealTournament.ini"), labelConstraints);
+        GridBagConstraints pathConstraints = new GridBagConstraints();
+        pathConstraints.gridx = 1;
+        pathConstraints.gridy = 1;
+        pathConstraints.weightx = 1;
+        pathConstraints.fill = GridBagConstraints.HORIZONTAL;
+        pathConstraints.insets = new Insets(4, 4, 8, 4);
+        content.add(pathPanel, pathConstraints);
+
+        JButton fetchButton = new JButton("Fetch game browser favorites");
+        JButton syncButton = new JButton("Sync game browser favorites");
+        JButton closeButton = new JButton("Close");
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        actions.add(fetchButton);
+        actions.add(syncButton);
+        actions.add(closeButton);
+
+        browseButton.addActionListener(event -> {
+            JFileChooser chooser = new JFileChooser();
+            chooser.setDialogTitle("Select UnrealTournament.ini");
+            chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+            chooser.setAcceptAllFileFilterUsed(false);
+            chooser.setFileFilter(new FileNameExtensionFilter("INI files (*.ini)", "ini"));
+            String currentPath = iniPathField.getText().trim();
+            if (!currentPath.isEmpty()) {
+                try {
+                    Path current = Path.of(currentPath);
+                    if (Files.isDirectory(current)) {
+                        chooser.setCurrentDirectory(current.toFile());
+                    } else if (current.getParent() != null) {
+                        chooser.setCurrentDirectory(current.getParent().toFile());
+                        chooser.setSelectedFile(current.toFile());
+                    }
+                } catch (java.nio.file.InvalidPathException e) {
+                    JOptionPane.showMessageDialog(dialog, "Invalid INI file path: " + e.getMessage(),
+                            "Invalid path", JOptionPane.WARNING_MESSAGE);
+                }
+            }
+            if (chooser.showOpenDialog(dialog) == JFileChooser.APPROVE_OPTION) {
+                iniPathField.setText(chooser.getSelectedFile().getAbsolutePath());
+            }
+        });
+        fetchButton.addActionListener(event -> fetchGameBrowserFavorites(iniPathField, dialog));
+        syncButton.addActionListener(event -> syncGameBrowserFavorites(iniPathField, dialog));
+        closeButton.addActionListener(event -> dialog.dispose());
+
+        dialog.add(content, BorderLayout.CENTER);
+        dialog.add(actions, BorderLayout.SOUTH);
+        dialog.pack();
+        dialog.setResizable(false);
+        dialog.setLocationRelativeTo(frame);
+        dialog.setVisible(true);
+    }
+
+    private void fetchGameBrowserFavorites(JTextField iniPathField, JDialog dialog) {
+        Path iniPath = selectedGameIni(iniPathField, false);
+        if (iniPath == null) {
+            return;
+        }
+        int choice = askFavoriteMergeMode(
+                "Fetch game browser favorites",
+                "How should the game browser favorites be applied to the app?");
+        if (choice < 0) {
+            return;
+        }
+        try {
+            List<ServerEntry> imported = new GameBrowserFavoritesStore(iniPath).load();
+            List<ServerEntry> previousFavorites = new ArrayList<>(favorites);
+            List<ServerEntry> updatedFavorites = FavoriteStore.combineFavorites(
+                    previousFavorites, imported, choice == 1);
+            favorites.clear();
+            favorites.addAll(updatedFavorites);
+            if (!saveFavorites()) {
+                favorites.clear();
+                favorites.addAll(previousFavorites);
+                displayServersInModel(favorites, favoriteModel);
+                return;
+            }
+            saveGameIniPath(iniPath);
+            JOptionPane.showMessageDialog(dialog,
+                    "Fetched " + imported.size() + " game browser favorite(s).",
+                    "Favorites fetched", JOptionPane.INFORMATION_MESSAGE);
+        } catch (IOException e) {
+            showError("Could not fetch game browser favorites: " + e.getMessage());
+        }
+    }
+
+    private void syncGameBrowserFavorites(JTextField iniPathField, JDialog dialog) {
+        Path iniPath = selectedGameIni(iniPathField, true);
+        if (iniPath == null) {
+            return;
+        }
+        int choice = askFavoriteMergeMode(
+                "Sync game browser favorites",
+                "How should the app favorites be applied to the game browser?");
+        if (choice < 0) {
+            return;
+        }
+        try {
+            GameBrowserFavoritesStore gameStore = new GameBrowserFavoritesStore(iniPath);
+            List<ServerEntry> updatedGameFavorites = choice == 1
+                    ? FavoriteStore.combineFavorites(gameStore.load(), favorites, true)
+                    : FavoriteStore.combineFavorites(new ArrayList<>(), favorites, false);
+            gameStore.save(updatedGameFavorites);
+            saveGameIniPath(iniPath);
+            JOptionPane.showMessageDialog(dialog,
+                    "Synced " + updatedGameFavorites.size() + " favorite(s) to the game browser.",
+                    "Favorites synced", JOptionPane.INFORMATION_MESSAGE);
+        } catch (IOException e) {
+            showError("Could not sync game browser favorites: " + e.getMessage());
+        }
+    }
+
+    private int askFavoriteMergeMode(String title, String message) {
+        int choice = JOptionPane.showOptionDialog(frame, message, title,
+                JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE, null,
+                new Object[]{"Replace list", "Merge lists", "Cancel"}, "Merge lists");
+        return choice == 0 || choice == 1 ? choice : -1;
+    }
+
+    private Path selectedGameIni(JTextField iniPathField, boolean requireWritable) {
+        String value = iniPathField.getText().trim();
+        if (value.isEmpty()) {
+            JOptionPane.showMessageDialog(frame, "Browse to your UnrealTournament.ini file first.",
+                    "INI file required", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+        try {
+            Path path = Path.of(value).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(path) || !Files.isReadable(path)
+                    || (requireWritable && !Files.isWritable(path))) {
+                String requirement = requireWritable
+                        ? "existing, readable and writable" : "existing and readable";
+                JOptionPane.showMessageDialog(frame,
+                        "Select an " + requirement + " UnrealTournament.ini file.",
+                        "INI file unavailable", JOptionPane.WARNING_MESSAGE);
+                return null;
+            }
+            return path;
+        } catch (java.nio.file.InvalidPathException e) {
+            JOptionPane.showMessageDialog(frame, "Invalid INI file path: " + e.getMessage(),
+                    "Invalid path", JOptionPane.WARNING_MESSAGE);
+            return null;
+        }
+    }
+
+    private void saveGameIniPath(Path iniPath) {
+        try {
+            COLUMN_PREFERENCES.put("gameIniPath", iniPath.toString());
+            COLUMN_PREFERENCES.flush();
+        } catch (BackingStoreException e) {
+            showError("Favorites were updated, but the game INI path could not be remembered: "
+                    + e.getMessage());
+        }
+    }
+
     private void loadFavorites() {
         try {
             favorites.clear();
@@ -1598,7 +1784,7 @@ public final class ServerBrowserApp {
 
     private boolean containsFavorite(ServerEntry server) {
         for (ServerEntry favorite : favorites) {
-            if (favorite.address().equalsIgnoreCase(server.address())) {
+            if (favorite.normalizedAddress().equals(server.normalizedAddress())) {
                 return true;
             }
         }
@@ -1784,9 +1970,9 @@ public final class ServerBrowserApp {
     }
 
     private boolean containsFavoriteAddress(String ip, String gamePort) {
-        String address = ip + ":" + gamePort;
+        String address = ServerEntry.normalizedAddress(ip, gamePort);
         for (ServerEntry favorite : favorites) {
-            if (favorite.address().equalsIgnoreCase(address)) {
+            if (favorite.normalizedAddress().equals(address)) {
                 return true;
             }
         }
@@ -1795,7 +1981,7 @@ public final class ServerBrowserApp {
 
     private ServerEntry findFavorite(ServerEntry server) {
         for (ServerEntry favorite : favorites) {
-            if (favorite.address().equalsIgnoreCase(server.address())) {
+            if (favorite.normalizedAddress().equals(server.normalizedAddress())) {
                 return favorite;
             }
         }
@@ -1814,7 +2000,7 @@ public final class ServerBrowserApp {
     private void removeFavorite(ServerEntry server) {
         int index = -1;
         for (int i = 0; i < favorites.size(); i++) {
-            if (favorites.get(i).address().equalsIgnoreCase(server.address())) {
+            if (favorites.get(i).normalizedAddress().equals(server.normalizedAddress())) {
                 index = i;
                 break;
             }
@@ -1828,7 +2014,8 @@ public final class ServerBrowserApp {
             displayServersInModel(favorites, favoriteModel);
             return;
         }
-        if (selectedServer != null && selectedServer.address().equalsIgnoreCase(server.address())) {
+        if (selectedServer != null
+                && selectedServer.normalizedAddress().equals(server.normalizedAddress())) {
             clearSelectedServer();
         }
     }

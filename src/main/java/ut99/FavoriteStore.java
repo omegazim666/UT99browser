@@ -14,6 +14,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.HashSet;
+import java.util.Set;
 
 final class FavoriteStore {
     private final Path file;
@@ -52,7 +54,7 @@ final class FavoriteStore {
         for (Map<String, Object> fields : entries.values()) {
             favorites.add(new ServerEntry(fields));
         }
-        return favorites;
+        return combineFavorites(new ArrayList<>(), favorites, false);
     }
 
     static List<ServerEntry> combineFavorites(
@@ -66,15 +68,12 @@ final class FavoriteStore {
     }
 
     private static void addUniqueFavorites(List<ServerEntry> target, List<ServerEntry> candidates) {
+        Set<String> addresses = new HashSet<>();
+        for (ServerEntry favorite : target) {
+            addresses.add(favorite.normalizedAddress());
+        }
         for (ServerEntry candidate : candidates) {
-            boolean duplicate = false;
-            for (ServerEntry favorite : target) {
-                if (favorite.address().equalsIgnoreCase(candidate.address())) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (!duplicate) {
+            if (addresses.add(candidate.normalizedAddress())) {
                 target.add(candidate);
             }
         }
@@ -82,7 +81,7 @@ final class FavoriteStore {
 
     void save(List<ServerEntry> favorites) throws IOException {
         Properties properties = new Properties();
-        for (ServerEntry favorite : favorites) {
+        for (ServerEntry favorite : combineFavorites(new ArrayList<>(), favorites, false)) {
             String address = favorite.address();
             String encodedAddress = Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(address.getBytes(StandardCharsets.UTF_8));
