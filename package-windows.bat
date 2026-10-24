@@ -17,8 +17,11 @@ if not exist "%JDK_BIN%\jlink.exe" (
     exit /b 1
 )
 
-set "PACKAGE_DIR=dist\UT99_Browser-B1.2"
-set "ARCHIVE_PATH=dist\UT99_Browser-B1.2.zip"
+set "VERSION=%~1"
+if not defined VERSION set "VERSION=B1.3"
+set "PACKAGE_NAME=UT99_Browser-%VERSION%"
+set "PACKAGE_DIR=dist\%PACKAGE_NAME%"
+set "ARCHIVE_PATH=dist\%PACKAGE_NAME%.zip"
 if exist "%PACKAGE_DIR%" rmdir /s /q "%PACKAGE_DIR%"
 if exist "%ARCHIVE_PATH%" del /q "%ARCHIVE_PATH%"
 if not exist dist mkdir dist
