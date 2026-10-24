@@ -36,6 +36,8 @@ source.
 - Use **File > Save list** and **File > Load list** to export or import `.lst`
   favorite lists; loading can replace or merge favorites and avoids duplicate
   server addresses.
+- Choose **Themes > Default** or **Dark** to switch the interface colors. The
+  selected theme is marked with a check and remembered between launches.
 - Shows the last direct-query result in the server and favorites tables. UT99's
   query port is the game port plus one; a server that does not expose this query
   port will not return live status.

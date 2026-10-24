@@ -1,8 +1,11 @@
 package ut99;
 
 import javax.swing.BorderFactory;
+import javax.swing.AbstractButton;
+import javax.swing.ButtonGroup;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -20,25 +23,31 @@ import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
+import javax.swing.JViewport;
+import javax.swing.SortOrder;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import javax.swing.Timer;
 import javax.swing.UIManager;
 import javax.swing.filechooser.FileNameExtensionFilter;
+import javax.swing.border.Border;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.JTableHeader;
 import javax.swing.table.TableCellRenderer;
 import javax.swing.table.TableRowSorter;
-import javax.swing.SortOrder;
 import javax.swing.RowSorter;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ListSelectionEvent;
 import javax.swing.event.TableColumnModelEvent;
 import javax.swing.event.TableColumnModelListener;
+import javax.swing.text.JTextComponent;
 import javax.imageio.ImageIO;
 import java.awt.datatransfer.StringSelection;
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Component;
+import java.awt.Container;
 import java.awt.Desktop;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
@@ -62,7 +71,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,6 +89,31 @@ public final class ServerBrowserApp {
     private static final URI DISCORD_INVITE = URI.create("https://discord.gibblets.com/");
     private static final Preferences COLUMN_PREFERENCES =
             Preferences.userNodeForPackage(ServerBrowserApp.class).node("column-widths");
+    private static final ColorPalette DARK_PALETTE = new ColorPalette(
+            Color.BLACK, Color.BLACK, new Color(240, 240, 240),
+            new Color(184, 210, 241), new Color(0, 0, 160), Color.WHITE,
+            Color.BLACK, new Color(112, 153, 199), new Color(112, 153, 199), Color.BLACK);
+    private static final String[] THEME_UI_KEYS = {
+            "Panel.background", "Panel.foreground", "Label.foreground",
+            "Button.background", "Button.foreground", "ToggleButton.background",
+            "ToggleButton.foreground", "MenuBar.background", "MenuBar.foreground",
+            "Menu.background", "Menu.foreground", "Menu.selectionBackground",
+            "Menu.selectionForeground", "MenuItem.background", "MenuItem.foreground",
+            "MenuItem.selectionBackground", "MenuItem.selectionForeground",
+            "TabbedPane.background", "TabbedPane.foreground", "TabbedPane.selected",
+            "TabbedPane.contentAreaColor", "TabbedPane.tabAreaBackground",
+            "ScrollBar.background", "ScrollBar.foreground", "ScrollBar.track",
+            "ScrollBar.trackHighlight", "ScrollBar.thumb", "ScrollBar.thumbDarkShadow",
+            "ScrollBar.thumbHighlight", "ScrollBar.thumbShadow",
+            "Table.background", "Table.foreground", "Table.selectionBackground",
+            "Table.selectionForeground", "Table.gridColor", "TableHeader.background",
+            "TableHeader.foreground", "TextField.background", "TextField.foreground",
+            "TextArea.background", "TextArea.foreground", "TextField.caretForeground",
+            "TextArea.caretForeground", "TextField.selectionBackground",
+            "TextArea.selectionBackground", "TextField.selectionForeground",
+            "TextArea.selectionForeground"
+    };
+    private static final Map<String, Object> DEFAULT_UI_VALUES = new HashMap<>();
 
     private final ApiClient apiClient = new ApiClient();
     private final JFrame frame = new JFrame("Unreal Tournament 99 Server Browser " + readVersion());
@@ -131,8 +167,11 @@ public final class ServerBrowserApp {
     private final JButton addFavoriteButton = new JButton("Add favorite");
     private final JButton pingButton = new JButton("Refresh server");
     private final JButton queryAllButton = new JButton("Query all servers");
+    private final Map<Component, ComponentColors> defaultComponentColors = new IdentityHashMap<>();
+    private final Map<Theme, JCheckBoxMenuItem> themeMenuItems = new EnumMap<>(Theme.class);
     private SwingWorker<Void, ServerQueryUpdate> bulkQueryWorker;
     private volatile boolean bulkQueryStopRequested;
+    private Theme activeTheme = Theme.DEFAULT;
     private boolean favoritesTabSelected;
     private String searchQuery = "";
     private int totalServers;
@@ -149,8 +188,10 @@ public final class ServerBrowserApp {
             } catch (Exception e) {
                 showStartupError(e);
             }
+            captureDefaultUiValues();
             try {
                 ServerBrowserApp app = new ServerBrowserApp();
+                app.applyTheme(savedTheme());
                 app.show();
                 app.checkForUpdates();
             } catch (IOException e) {
@@ -170,6 +211,18 @@ public final class ServerBrowserApp {
     private static void showStartupError(Exception e) {
         JOptionPane.showMessageDialog(null, "Unable to set the system look and feel: "
                         + e.getMessage(), "Startup warning", JOptionPane.WARNING_MESSAGE);
+    }
+
+    private static void captureDefaultUiValues() {
+        for (String key : THEME_UI_KEYS) {
+            DEFAULT_UI_VALUES.put(key, UIManager.get(key));
+        }
+    }
+
+    private static void restoreDefaultUiValues() {
+        for (String key : THEME_UI_KEYS) {
+            UIManager.put(key, DEFAULT_UI_VALUES.get(key));
+        }
     }
 
     private void buildWindow() {
@@ -290,6 +343,7 @@ public final class ServerBrowserApp {
         root.add(footer, BorderLayout.SOUTH);
 
         frame.setContentPane(root);
+        captureDefaultComponentColors(frame);
         frame.addComponentListener(new ComponentAdapter() {
             @Override
             public void componentResized(ComponentEvent event) {
@@ -427,9 +481,16 @@ public final class ServerBrowserApp {
                     && isLinkDetail(String.valueOf(table.getValueAt(row, 0)));
             setFont(table.getFont());
             setForeground(selected ? table.getSelectionForeground()
-                    : hyperlink ? new java.awt.Color(0, 80, 180) : table.getForeground());
+                    : hyperlink ? hyperlinkColor(table) : table.getForeground());
             setBackground(selected ? table.getSelectionBackground() : table.getBackground());
             return this;
+        }
+
+        private static Color hyperlinkColor(JTable table) {
+            Color background = table.getBackground();
+            int brightness = (background.getRed() * 299 + background.getGreen() * 587
+                    + background.getBlue() * 114) / 1000;
+            return brightness < 128 ? new Color(100, 181, 246) : new Color(0, 80, 180);
         }
     }
 
@@ -1085,7 +1146,305 @@ public final class ServerBrowserApp {
         fileMenu.add(saveList);
         fileMenu.add(loadList);
         menuBar.add(fileMenu);
+
+        JMenu themesMenu = new JMenu("Themes");
+        ButtonGroup themeGroup = new ButtonGroup();
+        for (Theme theme : Theme.values()) {
+            JCheckBoxMenuItem themeItem = new JCheckBoxMenuItem(theme.label);
+            themeItem.setSelected(theme == activeTheme);
+            themeItem.addActionListener(event -> applyTheme(theme));
+            themeGroup.add(themeItem);
+            themesMenu.add(themeItem);
+            themeMenuItems.put(theme, themeItem);
+        }
+        menuBar.add(themesMenu);
         return menuBar;
+    }
+
+    private void applyTheme(Theme theme) {
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            restoreDefaultUiValues();
+            ColorPalette palette = theme.palette;
+            if (palette != null) {
+                installPalette(palette);
+            }
+            SwingUtilities.updateComponentTreeUI(frame);
+            restoreDefaultComponentColors(frame);
+            if (palette != null) {
+                applyPalette(frame, palette);
+            }
+            activeTheme = theme;
+            JCheckBoxMenuItem selectedItem = themeMenuItems.get(theme);
+            if (selectedItem != null) {
+                selectedItem.setSelected(true);
+            }
+            frame.invalidate();
+            frame.validate();
+            frame.repaint();
+            COLUMN_PREFERENCES.put("theme", theme.name());
+            COLUMN_PREFERENCES.flush();
+        } catch (ClassNotFoundException | InstantiationException
+                 | IllegalAccessException | javax.swing.UnsupportedLookAndFeelException e) {
+            JCheckBoxMenuItem activeItem = themeMenuItems.get(activeTheme);
+            if (activeItem != null) {
+                activeItem.setSelected(true);
+            }
+            showError("Could not apply the " + theme.label + " theme: " + e.getMessage());
+        } catch (BackingStoreException e) {
+            showError("Could not save the selected theme: " + e.getMessage());
+        }
+    }
+
+    private static void installPalette(ColorPalette palette) {
+        UIManager.put("Panel.background", palette.surface);
+        UIManager.put("Panel.foreground", palette.foreground);
+        UIManager.put("Label.foreground", palette.foreground);
+        UIManager.put("Button.background", palette.control);
+        UIManager.put("Button.foreground", palette.controlForeground);
+        UIManager.put("ToggleButton.background", palette.control);
+        UIManager.put("ToggleButton.foreground", palette.controlForeground);
+        UIManager.put("MenuBar.background", palette.control);
+        UIManager.put("MenuBar.foreground", palette.controlForeground);
+        UIManager.put("Menu.background", palette.control);
+        UIManager.put("Menu.foreground", palette.controlForeground);
+        UIManager.put("Menu.selectionBackground", palette.selection);
+        UIManager.put("Menu.selectionForeground", palette.selectionForeground);
+        UIManager.put("MenuItem.background", palette.control);
+        UIManager.put("MenuItem.foreground", palette.controlForeground);
+        UIManager.put("MenuItem.selectionBackground", palette.selection);
+        UIManager.put("MenuItem.selectionForeground", palette.selectionForeground);
+        UIManager.put("TabbedPane.background", palette.control);
+        UIManager.put("TabbedPane.foreground", palette.controlForeground);
+        UIManager.put("TabbedPane.selected", palette.selectedTab);
+        UIManager.put("TabbedPane.contentAreaColor", palette.surface);
+        UIManager.put("TabbedPane.tabAreaBackground", palette.control);
+        UIManager.put("ScrollBar.background", palette.control);
+        UIManager.put("ScrollBar.foreground", palette.controlForeground);
+        UIManager.put("ScrollBar.track", palette.control);
+        UIManager.put("ScrollBar.trackHighlight", palette.selectedTab);
+        UIManager.put("ScrollBar.thumb", palette.border);
+        UIManager.put("ScrollBar.thumbDarkShadow", palette.border);
+        UIManager.put("ScrollBar.thumbHighlight", palette.control);
+        UIManager.put("ScrollBar.thumbShadow", palette.border);
+        UIManager.put("Table.background", palette.table);
+        UIManager.put("Table.foreground", palette.foreground);
+        UIManager.put("Table.selectionBackground", palette.selection);
+        UIManager.put("Table.selectionForeground", palette.selectionForeground);
+        UIManager.put("Table.gridColor", palette.border);
+        UIManager.put("TableHeader.background", palette.control);
+        UIManager.put("TableHeader.foreground", palette.controlForeground);
+        UIManager.put("TextField.background", palette.input);
+        UIManager.put("TextField.foreground", palette.foreground);
+        UIManager.put("TextArea.background", palette.input);
+        UIManager.put("TextArea.foreground", palette.foreground);
+        UIManager.put("TextField.caretForeground", palette.foreground);
+        UIManager.put("TextArea.caretForeground", palette.foreground);
+        UIManager.put("TextField.selectionBackground", palette.selection);
+        UIManager.put("TextArea.selectionBackground", palette.selection);
+        UIManager.put("TextField.selectionForeground", palette.selectionForeground);
+        UIManager.put("TextArea.selectionForeground", palette.selectionForeground);
+    }
+
+    private void captureDefaultComponentColors(Component component) {
+        if (component instanceof javax.swing.JComponent) {
+            defaultComponentColors.put(component, new ComponentColors(component));
+        }
+        if (component instanceof Container) {
+            for (Component child : ((Container) component).getComponents()) {
+                captureDefaultComponentColors(child);
+            }
+        }
+    }
+
+    private void restoreDefaultComponentColors(Component component) {
+        ComponentColors colors = defaultComponentColors.get(component);
+        if (colors != null && component instanceof javax.swing.JComponent) {
+            component.setForeground(colors.foreground);
+            component.setBackground(colors.background);
+            ((javax.swing.JComponent) component).setBorder(colors.border);
+            if (component instanceof JTable) {
+                JTable table = (JTable) component;
+                table.setSelectionBackground(colors.selectionBackground);
+                table.setSelectionForeground(colors.selectionForeground);
+                table.setGridColor(colors.gridColor);
+            }
+            if (component instanceof JTabbedPane) {
+                JTabbedPane tabs = (JTabbedPane) component;
+                for (int index = 0; index < tabs.getTabCount(); index++) {
+                    tabs.setBackgroundAt(index, colors.tabBackgrounds[index]);
+                    tabs.setForegroundAt(index, colors.tabForegrounds[index]);
+                }
+            }
+            if (component instanceof JTextComponent) {
+                JTextComponent textComponent = (JTextComponent) component;
+                textComponent.setCaretColor(colors.caretColor);
+                textComponent.setSelectionColor(colors.selectionColor);
+                textComponent.setSelectedTextColor(colors.selectedTextColor);
+            }
+        }
+        if (component instanceof Container) {
+            for (Component child : ((Container) component).getComponents()) {
+                restoreDefaultComponentColors(child);
+            }
+        }
+    }
+
+    private static void applyPalette(Component component, ColorPalette palette) {
+        if (component instanceof javax.swing.JComponent) {
+            component.setForeground(palette.foreground);
+        }
+        if (component instanceof JPanel || component instanceof JViewport
+                || component instanceof JScrollPane) {
+            component.setBackground(palette.surface);
+        }
+        if (component instanceof JMenuBar || component instanceof JMenu
+                || component instanceof JMenuItem) {
+            component.setBackground(palette.control);
+            component.setForeground(palette.controlForeground);
+        }
+        if (component instanceof JTabbedPane) {
+            JTabbedPane tabs = (JTabbedPane) component;
+            tabs.setBackground(palette.control);
+            tabs.setForeground(palette.controlForeground);
+            for (int index = 0; index < tabs.getTabCount(); index++) {
+                tabs.setBackgroundAt(index, index == tabs.getSelectedIndex()
+                        ? palette.selectedTab : palette.control);
+                tabs.setForegroundAt(index, palette.controlForeground);
+            }
+        }
+        if (component instanceof AbstractButton) {
+            component.setBackground(palette.control);
+            component.setForeground(palette.controlForeground);
+        }
+        if (component instanceof JTable) {
+            JTable table = (JTable) component;
+            table.setBackground(palette.table);
+            table.setForeground(palette.foreground);
+            table.setSelectionBackground(palette.selection);
+            table.setSelectionForeground(palette.selectionForeground);
+            table.setGridColor(palette.border);
+        }
+        if (component instanceof JTableHeader) {
+            component.setBackground(palette.control);
+            component.setForeground(palette.controlForeground);
+        }
+        if (component instanceof JTextComponent) {
+            JTextComponent textComponent = (JTextComponent) component;
+            textComponent.setBackground(palette.input);
+            textComponent.setForeground(palette.foreground);
+            textComponent.setCaretColor(palette.foreground);
+            textComponent.setSelectionColor(palette.selection);
+            textComponent.setSelectedTextColor(palette.selectionForeground);
+        }
+        if (component instanceof Container) {
+            for (Component child : ((Container) component).getComponents()) {
+                applyPalette(child, palette);
+            }
+        }
+    }
+
+    private static Theme savedTheme() {
+        String saved = COLUMN_PREFERENCES.get("theme", Theme.DEFAULT.name());
+        try {
+            return Theme.valueOf(saved);
+        } catch (IllegalArgumentException e) {
+            return Theme.DEFAULT;
+        }
+    }
+
+    private enum Theme {
+        DEFAULT("Default", null),
+        DARK("Dark", DARK_PALETTE);
+
+        private final String label;
+        private final ColorPalette palette;
+
+        Theme(String label, ColorPalette palette) {
+            this.label = label;
+            this.palette = palette;
+        }
+    }
+
+    private static final class ColorPalette {
+        private final Color surface;
+        private final Color input;
+        private final Color foreground;
+        private final Color control;
+        private final Color selection;
+        private final Color selectionForeground;
+        private final Color table;
+        private final Color selectedTab;
+        private final Color border;
+        private final Color controlForeground;
+
+        ColorPalette(Color surface, Color input, Color foreground, Color control,
+                     Color selection, Color selectionForeground, Color table,
+                     Color selectedTab, Color border, Color controlForeground) {
+            this.surface = surface;
+            this.input = input;
+            this.foreground = foreground;
+            this.control = control;
+            this.selection = selection;
+            this.selectionForeground = selectionForeground;
+            this.table = table;
+            this.selectedTab = selectedTab;
+            this.border = border;
+            this.controlForeground = controlForeground;
+        }
+    }
+
+    private static final class ComponentColors {
+        private final Color foreground;
+        private final Color background;
+        private final Color selectionBackground;
+        private final Color selectionForeground;
+        private final Color gridColor;
+        private final Color caretColor;
+        private final Color selectionColor;
+        private final Color selectedTextColor;
+        private final Color[] tabBackgrounds;
+        private final Color[] tabForegrounds;
+        private final Border border;
+
+        ComponentColors(Component component) {
+            foreground = component.getForeground();
+            background = component.getBackground();
+            border = component instanceof javax.swing.JComponent
+                    ? ((javax.swing.JComponent) component).getBorder() : null;
+            if (component instanceof JTable) {
+                JTable table = (JTable) component;
+                selectionBackground = table.getSelectionBackground();
+                selectionForeground = table.getSelectionForeground();
+                gridColor = table.getGridColor();
+            } else {
+                selectionBackground = null;
+                selectionForeground = null;
+                gridColor = null;
+            }
+            if (component instanceof JTextComponent) {
+                JTextComponent textComponent = (JTextComponent) component;
+                caretColor = textComponent.getCaretColor();
+                selectionColor = textComponent.getSelectionColor();
+                selectedTextColor = textComponent.getSelectedTextColor();
+            } else {
+                caretColor = null;
+                selectionColor = null;
+                selectedTextColor = null;
+            }
+            if (component instanceof JTabbedPane) {
+                JTabbedPane tabs = (JTabbedPane) component;
+                tabBackgrounds = new Color[tabs.getTabCount()];
+                tabForegrounds = new Color[tabs.getTabCount()];
+                for (int index = 0; index < tabs.getTabCount(); index++) {
+                    tabBackgrounds[index] = tabs.getBackgroundAt(index);
+                    tabForegrounds[index] = tabs.getForegroundAt(index);
+                }
+            } else {
+                tabBackgrounds = new Color[0];
+                tabForegrounds = new Color[0];
+            }
+        }
     }
 
     private void saveFavoriteList() {
