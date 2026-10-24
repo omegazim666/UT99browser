@@ -5,8 +5,11 @@ A lightweight Java 11 desktop browser for Unreal Tournament servers listed by
 
 ## Run
 
-Install a Java 11 or newer JDK, then double-click `run.bat` or run it from a
-terminal. The script compiles the app into `out` and launches the Swing UI.
+Install a Java 11 or newer JDK (a JRE alone is not enough), then double-click
+`run.bat` or run it from a terminal. The script compiles the app into `out` and
+launches the Swing UI. If `javac` is not found, add the JDK's `bin` directory to
+`PATH` or set `JAVA_HOME` to the JDK installation folder. The launcher displays
+a popup with a Java download button when Java is missing.
 
 ## Features
 
