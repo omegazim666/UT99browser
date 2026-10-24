@@ -17,8 +17,11 @@ if not exist "%JDK_BIN%\jlink.exe" (
     exit /b 1
 )
 
-set "VERSION=%~1"
-if not defined VERSION set "VERSION=B1.3"
+set /p VERSION=<version.txt
+if not defined VERSION (
+    echo Could not read the version from version.txt.
+    exit /b 1
+)
 set "PACKAGE_NAME=UT99_Browser-%VERSION%"
 set "PACKAGE_DIR=dist\%PACKAGE_NAME%"
 set "ARCHIVE_PATH=dist\%PACKAGE_NAME%.zip"
@@ -39,6 +42,8 @@ if errorlevel 1 exit /b 1
 copy /y src\img\discord.png "%PACKAGE_DIR%\src\img\discord.png" >nul
 if errorlevel 1 exit /b 1
 copy /y README.md "%PACKAGE_DIR%\README.md" >nul
+if errorlevel 1 exit /b 1
+copy /y version.txt "%PACKAGE_DIR%\version.txt" >nul
 if errorlevel 1 exit /b 1
 copy /y run-standalone.bat "%PACKAGE_DIR%\UT99 Browser.bat" >nul
 if errorlevel 1 exit /b 1

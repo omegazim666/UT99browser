@@ -46,6 +46,7 @@ import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -66,7 +67,7 @@ public final class ServerBrowserApp {
             Preferences.userNodeForPackage(ServerBrowserApp.class).node("column-widths");
 
     private final ApiClient apiClient = new ApiClient();
-    private final JFrame frame = new JFrame("Unreal Tournament 99 Server Browser");
+    private final JFrame frame = new JFrame("Unreal Tournament 99 Server Browser " + readVersion());
     private final JTextField searchField = new JTextField(28);
     private final JLabel statusLabel = new JLabel("Ready");
     private final JLabel detailHeading = new JLabel("Select a server to view its players");
@@ -118,11 +119,12 @@ public final class ServerBrowserApp {
     private final JButton queryAllButton = new JButton("Query all servers");
     private SwingWorker<Void, ServerQueryUpdate> bulkQueryWorker;
     private volatile boolean bulkQueryStopRequested;
+    private boolean favoritesTabSelected;
     private String searchQuery = "";
     private int totalServers;
     private ServerEntry selectedServer;
 
-    private ServerBrowserApp() {
+    private ServerBrowserApp() throws IOException {
         buildWindow();
     }
 
@@ -133,8 +135,20 @@ public final class ServerBrowserApp {
             } catch (Exception e) {
                 showStartupError(e);
             }
-            new ServerBrowserApp().show();
+            try {
+                new ServerBrowserApp().show();
+            } catch (IOException e) {
+                showStartupError(e);
+            }
         });
+    }
+
+    private static String readVersion() throws IOException {
+        String version = Files.readString(Path.of("version.txt"), StandardCharsets.UTF_8).trim();
+        if (!version.matches("B\\d+\\.\\d+")) {
+            throw new IOException("version.txt must contain a version such as B1.3.");
+        }
+        return version.toLowerCase(java.util.Locale.ROOT);
     }
 
     private static void showStartupError(Exception e) {
@@ -191,7 +205,9 @@ public final class ServerBrowserApp {
         favoritesPanel.add(new JScrollPane(favoriteTable), BorderLayout.CENTER);
         serverTabs.addTab("Favorites", favoritesPanel);
         serverTabs.addChangeListener(event -> {
-            JTable activeTable = serverTabs.getSelectedIndex() == 1 ? favoriteTable : serverTable;
+            favoritesTabSelected = serverTabs.getSelectedIndex() == 1;
+            updateBulkQueryButton();
+            JTable activeTable = favoritesTabSelected ? favoriteTable : serverTable;
             if (activeTable.getSelectedRow() >= 0) {
                 selectServer(activeTable, activeTable == favoriteTable ? favorites : currentServers);
             } else {
@@ -251,7 +267,8 @@ public final class ServerBrowserApp {
         pingButton.setEnabled(false);
         queryAllButton.addActionListener(event -> {
             if (bulkQueryWorker == null) {
-                queryAllServers();
+                queryServers(favoritesTabSelected ? favorites : allServers,
+                        favoritesTabSelected ? "favorites" : "servers");
             } else {
                 bulkQueryStopRequested = true;
                 queryAllButton.setText("Stopping...");
@@ -443,7 +460,7 @@ public final class ServerBrowserApp {
                 } catch (Exception e) {
                     showError(messageFor(e));
                 } finally {
-                    queryAllButton.setEnabled(!allServers.isEmpty());
+                    updateBulkQueryButton();
                     setBusy(false, null);
                 }
             }
@@ -618,12 +635,22 @@ public final class ServerBrowserApp {
         }.execute();
     }
 
-    private void queryAllServers() {
-        if (allServers.isEmpty()) {
-            statusLabel.setText("No servers are loaded to query.");
+    private void updateBulkQueryButton() {
+        if (bulkQueryWorker != null) {
             return;
         }
-        List<ServerEntry> serversToQuery = new ArrayList<>(allServers);
+        queryAllButton.setText(favoritesTabSelected ? "Refresh all favorites" : "Query all servers");
+        queryAllButton.setEnabled(favoritesTabSelected ? !favorites.isEmpty() : !allServers.isEmpty());
+    }
+
+    private void queryServers(List<ServerEntry> source, String listName) {
+        if (source.isEmpty()) {
+            statusLabel.setText(favoritesTabSelected
+                    ? "No favorites are available to refresh."
+                    : "No servers are loaded to query.");
+            return;
+        }
+        List<ServerEntry> serversToQuery = new ArrayList<>(source);
         int total = serversToQuery.size();
         queryAllButton.setText("Cancel queries");
         pingButton.setEnabled(false);
@@ -688,15 +715,14 @@ public final class ServerBrowserApp {
                 boolean cancelled = bulkQueryStopRequested;
                 bulkQueryWorker = null;
                 bulkQueryStopRequested = false;
-                queryAllButton.setText("Query all servers");
-                queryAllButton.setEnabled(!allServers.isEmpty());
+                updateBulkQueryButton();
                 pingButton.setEnabled(selectedServer != null);
                 statusLabel.setText(String.format("%s %,d of %,d servers | %,d online | %,d no response",
-                        cancelled ? "Stopped querying" : "Finished querying",
+                        cancelled ? "Stopped refreshing" : "Finished refreshing",
                         completed, total, successful, failed));
             }
         };
-        statusLabel.setText("Querying " + total + " loaded servers directly...");
+        statusLabel.setText("Refreshing " + total + " " + listName + " directly...");
         bulkQueryWorker.execute();
     }
 
@@ -974,6 +1000,9 @@ public final class ServerBrowserApp {
                     server.address(),
                     pingStatuses.getOrDefault(server.address(), "Not checked")
             });
+        }
+        if (model == favoriteModel) {
+            updateBulkQueryButton();
         }
     }
 

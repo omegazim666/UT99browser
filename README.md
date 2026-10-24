@@ -8,9 +8,10 @@ A lightweight Java 11 desktop browser for Unreal Tournament servers listed by
 For end users, download and extract the standalone Windows package, then run
 `UT99 Browser.bat`; it includes its own Java runtime and does not require Java
 to be installed. To build the package from source, install a Java 11 or newer
-JDK and run `package-windows.bat B1.3`. This creates
-`dist\UT99_Browser-B1.3.zip`; the argument should match the release tag.
-Developers can still use `run.bat` to compile and run the app from source.
+JDK and run `package-windows.bat`. The version in `version.txt` is used for
+both the window title and the generated package name. Update that file for each
+release. Developers can still use `run.bat` to compile and run the app from
+source.
 
 ## Features
 
@@ -42,27 +43,5 @@ Developers can still use `run.bat` to compile and run the app from source.
 - Right-click a server in the main list to refresh it directly or copy its
   IP:game-port address. Selecting a server or clicking the selected row again
   continues to refresh its live status.
-- Players are listed by frags, highest score first. Resized columns in the
-  server, favorites, details, and player tables are saved as they are changed.
-  The app also restores its window size, position, and server/details split
-  divider; the initial window size is 1260 by 744 pixels.
-- The main server list opens sorted by current player count, highest first.
-  Users can change the sort priority by clicking any column header.
-- Displays the required 333networks data attribution.
-- Caches each API response and blocks the same request for 7.5 minutes, in line
-  with 333networks API terms. Server-list search is local; live server status
-  and player data are queried directly from the game server.
 
 Direct UT99 status queries currently require an IPv4 address.
-
-## Run tests
-
-From the project folder, compile the app and tests, then run both test classes:
-
-```bat
-javac -encoding UTF-8 -d out src\main\java\ut99\*.java src\test\java\ut99\*.java
-java -cp out ut99.JsonParserTest
-java -cp out ut99.FavoriteStoreTest
-java -cp out ut99.AboutImageAssetsTest
-java -cp out ut99.GameServerQueryTest
-```
