@@ -22,6 +22,8 @@ source.
 - The server list is fetched from 333networks at startup. Selecting a server
   queries its UT99 GameSpy status port directly; **Refresh server** repeats
   that live query without reloading the list.
+- Checks GitHub for a newer release at startup and offers to open the release
+  page; the check runs in the background and does not block startup.
 - **Query all servers** manually checks the full startup list directly, one
   server at a time, with progress and a cancel option. It does not re-fetch
   the list from 333networks.

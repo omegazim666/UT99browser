@@ -62,6 +62,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Comparator;
+import java.util.Optional;
 import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
 
@@ -144,7 +145,9 @@ public final class ServerBrowserApp {
                 showStartupError(e);
             }
             try {
-                new ServerBrowserApp().show();
+                ServerBrowserApp app = new ServerBrowserApp();
+                app.show();
+                app.checkForUpdates();
             } catch (IOException e) {
                 showStartupError(e);
             }
@@ -513,6 +516,50 @@ public final class ServerBrowserApp {
         }
         loadFavorites();
         loadServers();
+    }
+
+    private void checkForUpdates() {
+        new SwingWorker<Optional<UpdateChecker.Release>, Void>() {
+            @Override
+            protected Optional<UpdateChecker.Release> doInBackground() throws Exception {
+                return new UpdateChecker().checkForUpdate(readVersion());
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    Optional<UpdateChecker.Release> update = get();
+                    if (update.isPresent()) {
+                        UpdateChecker.Release release = update.get();
+                        int choice = JOptionPane.showConfirmDialog(frame,
+                                "Version " + release.version + " is available. "
+                                        + "Would you like to open the GitHub release page?",
+                                "Update available", JOptionPane.YES_NO_OPTION,
+                                JOptionPane.INFORMATION_MESSAGE);
+                        if (choice == JOptionPane.YES_OPTION) {
+                            openReleasePage(release.url);
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.err.println("GitHub update check was interrupted: " + e.getMessage());
+                } catch (java.util.concurrent.ExecutionException e) {
+                    System.err.println("GitHub update check failed: " + e.getCause().getMessage());
+                }
+            }
+        }.execute();
+    }
+
+    private void openReleasePage(URI releaseUrl) {
+        try {
+            if (!Desktop.isDesktopSupported()) {
+                throw new IOException("This system cannot open web links.");
+            }
+            Desktop.getDesktop().browse(releaseUrl);
+        } catch (IOException | UnsupportedOperationException e) {
+            JOptionPane.showMessageDialog(frame, "Could not open the GitHub release page: "
+                            + e.getMessage(), "Unable to open link", JOptionPane.ERROR_MESSAGE);
+        }
     }
 
     private void search(ActionEvent event) {
