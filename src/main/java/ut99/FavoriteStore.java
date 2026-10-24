@@ -55,6 +55,31 @@ final class FavoriteStore {
         return favorites;
     }
 
+    static List<ServerEntry> combineFavorites(
+            List<ServerEntry> existing, List<ServerEntry> imported, boolean merge) {
+        List<ServerEntry> combined = new ArrayList<>();
+        if (merge) {
+            addUniqueFavorites(combined, existing);
+        }
+        addUniqueFavorites(combined, imported);
+        return combined;
+    }
+
+    private static void addUniqueFavorites(List<ServerEntry> target, List<ServerEntry> candidates) {
+        for (ServerEntry candidate : candidates) {
+            boolean duplicate = false;
+            for (ServerEntry favorite : target) {
+                if (favorite.address().equalsIgnoreCase(candidate.address())) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) {
+                target.add(candidate);
+            }
+        }
+    }
+
     void save(List<ServerEntry> favorites) throws IOException {
         Properties properties = new Properties();
         for (ServerEntry favorite : favorites) {

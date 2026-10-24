@@ -3,8 +3,12 @@ package ut99;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
+import javax.swing.JMenu;
+import javax.swing.JMenuBar;
+import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JDialog;
@@ -21,6 +25,7 @@ import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import javax.swing.Timer;
 import javax.swing.UIManager;
+import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableCellRenderer;
 import javax.swing.table.TableRowSorter;
@@ -171,6 +176,7 @@ public final class ServerBrowserApp {
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setMinimumSize(new Dimension(1050, 680));
         restoreWindowBounds();
+        frame.setJMenuBar(buildMenuBar());
 
         JPanel root = new JPanel(new BorderLayout(8, 8));
         root.setBorder(BorderFactory.createEmptyBorder(10, 10, 8, 10));
@@ -1067,6 +1073,105 @@ public final class ServerBrowserApp {
         if (message != null) {
             statusLabel.setText(message);
         }
+    }
+
+    private JMenuBar buildMenuBar() {
+        JMenuBar menuBar = new JMenuBar();
+        JMenu fileMenu = new JMenu("File");
+        JMenuItem saveList = new JMenuItem("Save list");
+        saveList.addActionListener(event -> saveFavoriteList());
+        JMenuItem loadList = new JMenuItem("Load list");
+        loadList.addActionListener(event -> loadFavoriteList());
+        fileMenu.add(saveList);
+        fileMenu.add(loadList);
+        menuBar.add(fileMenu);
+        return menuBar;
+    }
+
+    private void saveFavoriteList() {
+        JFileChooser chooser = favoriteListChooser();
+        chooser.setDialogTitle("Save favorite list");
+        chooser.setSelectedFile(new java.io.File("favorites.lst"));
+        if (chooser.showSaveDialog(frame) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+
+        Path selectedFile = chooser.getSelectedFile().toPath();
+        if (!selectedFile.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".lst")) {
+            selectedFile = selectedFile.resolveSibling(selectedFile.getFileName() + ".lst");
+        }
+        try {
+            new FavoriteStore(selectedFile).save(favorites);
+            statusLabel.setText("Favorite list saved to " + selectedFile);
+        } catch (IOException e) {
+            showError("Could not save favorite list: " + e.getMessage());
+        }
+    }
+
+    private void loadFavoriteList() {
+        JFileChooser chooser = favoriteListChooser();
+        chooser.setDialogTitle("Load favorite list");
+        if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) {
+            return;
+        }
+
+        int choice = JOptionPane.showOptionDialog(frame,
+                "How would you like to load this favorite list?",
+                "Load favorite list",
+                JOptionPane.DEFAULT_OPTION,
+                JOptionPane.QUESTION_MESSAGE,
+                null,
+                new Object[]{"Replace current list", "Merge with current list", "Cancel"},
+                "Merge with current list");
+        if (choice != 0 && choice != 1) {
+            return;
+        }
+
+        try {
+            List<ServerEntry> imported = new FavoriteStore(chooser.getSelectedFile().toPath()).load();
+            List<ServerEntry> previousFavorites = new ArrayList<>(favorites);
+            favorites.clear();
+            favorites.addAll(FavoriteStore.combineFavorites(
+                    previousFavorites, imported, choice == 1));
+            if (saveFavorites()) {
+                statusLabel.setText(favorites.size() + " favorite server(s) loaded");
+            } else {
+                favorites.clear();
+                favorites.addAll(previousFavorites);
+                displayServersInModel(favorites, favoriteModel);
+            }
+        } catch (IOException e) {
+            showError("Could not load favorite list: " + e.getMessage());
+        }
+    }
+
+    private JFileChooser favoriteListChooser() {
+        JFileChooser chooser = new JFileChooser() {
+            @Override
+            public void approveSelection() {
+                if (getDialogType() == SAVE_DIALOG) {
+                    java.io.File selectedFile = getSelectedFile();
+                    if (selectedFile != null
+                            && !selectedFile.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".lst")) {
+                        selectedFile = new java.io.File(selectedFile.getParentFile(),
+                                selectedFile.getName() + ".lst");
+                        setSelectedFile(selectedFile);
+                    }
+                    if (selectedFile != null && selectedFile.exists()
+                            && JOptionPane.showConfirmDialog(this,
+                            "Replace the existing file \"" + selectedFile.getName() + "\"?",
+                            "Confirm save", JOptionPane.YES_NO_OPTION,
+                            JOptionPane.WARNING_MESSAGE) != JOptionPane.YES_OPTION) {
+                        return;
+                    }
+                }
+                super.approveSelection();
+            }
+        };
+        chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        chooser.setAcceptAllFileFilterUsed(false);
+        chooser.setFileFilter(new FileNameExtensionFilter("Favorite lists (*.lst)", "lst"));
+        return chooser;
     }
 
     private void loadFavorites() {

@@ -33,6 +33,9 @@ source.
   directly queries only the saved favorite servers.
 - Right-click a favorite and select **Edit favorite** to change its description,
   auto-update setting, IP address, game port, or query port.
+- Use **File > Save list** and **File > Load list** to export or import `.lst`
+  favorite lists; loading can replace or merge favorites and avoids duplicate
+  server addresses.
 - Shows the last direct-query result in the server and favorites tables. UT99's
   query port is the game port plus one; a server that does not expose this query
   port will not return live status.

@@ -11,13 +11,14 @@ public final class FavoriteStoreTest {
     public static void main(String[] args) throws Exception {
         roundTripsFavorites();
         rejectsMalformedFavoriteKeys();
+        combinesFavoritesWithoutDuplicates();
         System.out.println("FavoriteStore tests passed.");
     }
 
     private static void roundTripsFavorites() throws Exception {
         Path directory = Files.createTempDirectory("ut99-favorites-test");
         try {
-            Path file = directory.resolve("favorites.properties");
+            Path file = directory.resolve("favorites.lst");
             FavoriteStore store = new FavoriteStore(file);
             Map<String, Object> fields = new LinkedHashMap<>();
             fields.put("ip", "82.165.208.134");
@@ -44,7 +45,7 @@ public final class FavoriteStoreTest {
             store.save(java.util.Collections.emptyList());
             require(new FavoriteStore(file).load().isEmpty(), "removing all favorites");
         } finally {
-            Files.deleteIfExists(directory.resolve("favorites.properties"));
+            Files.deleteIfExists(directory.resolve("favorites.lst"));
             Files.deleteIfExists(directory);
         }
     }
@@ -52,7 +53,7 @@ public final class FavoriteStoreTest {
     private static void rejectsMalformedFavoriteKeys() throws Exception {
         Path directory = Files.createTempDirectory("ut99-favorites-invalid-test");
         try {
-            Path file = directory.resolve("favorites.properties");
+            Path file = directory.resolve("favorites.lst");
             Files.write(file, List.of("*.hostname=Bad server"));
             try {
                 new FavoriteStore(file).load();
@@ -61,9 +62,36 @@ public final class FavoriteStoreTest {
                 // Invalid persisted data should be surfaced as an error.
             }
         } finally {
-            Files.deleteIfExists(directory.resolve("favorites.properties"));
+            Files.deleteIfExists(directory.resolve("favorites.lst"));
             Files.deleteIfExists(directory);
         }
+    }
+
+    private static void combinesFavoritesWithoutDuplicates() {
+        ServerEntry existing = server("192.0.2.1", 7777, "Existing");
+        ServerEntry duplicateExisting = server("192.0.2.1", 7777, "Duplicate existing");
+        ServerEntry duplicateImported = server("192.0.2.1", 7777, "Imported duplicate");
+        ServerEntry newImported = server("192.0.2.2", 7777, "New server");
+
+        List<ServerEntry> merged = FavoriteStore.combineFavorites(
+                List.of(existing, duplicateExisting),
+                List.of(duplicateImported, newImported), true);
+        require(merged.size() == 2, "merge removes existing and imported duplicates");
+        require(merged.get(0) == existing, "merge keeps existing favorite");
+        require(merged.get(1) == newImported, "merge adds new favorite");
+
+        List<ServerEntry> replaced = FavoriteStore.combineFavorites(
+                List.of(existing), List.of(duplicateImported, newImported), false);
+        require(replaced.size() == 2, "replace removes imported duplicates");
+        require(replaced.get(0) == duplicateImported, "replace uses imported favorite");
+    }
+
+    private static ServerEntry server(String ip, int port, String hostname) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("ip", ip);
+        fields.put("hostport", port);
+        fields.put("hostname", hostname);
+        return new ServerEntry(fields);
     }
 
     private static void require(boolean condition, String name) {
