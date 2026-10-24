@@ -25,6 +25,9 @@ public final class FavoriteStoreTest {
             fields.put("hostname", "Green's Lair Ω");
             fields.put("numplayers", 2);
             fields.put("mapname", "AS-Revolution][-091");
+            fields.put("favoriteDescription", "My custom server label");
+            fields.put("autoUpdateDescription", false);
+            fields.put("queryport", 7779);
             store.save(List.of(new ServerEntry(fields)));
 
             List<ServerEntry> loaded = new FavoriteStore(file).load();
@@ -32,6 +35,11 @@ public final class FavoriteStoreTest {
             require("82.165.208.134:7777".equals(loaded.get(0).address()), "favorite address");
             require("Green's Lair Ω".equals(loaded.get(0).value("hostname", "")), "unicode hostname");
             require("2".equals(loaded.get(0).value("numplayers", "")), "player count");
+            require("My custom server label".equals(
+                    loaded.get(0).value("favoriteDescription", "")), "custom favorite description");
+            require("false".equals(loaded.get(0).value("autoUpdateDescription", "")),
+                    "favorite auto-update setting");
+            require("7779".equals(loaded.get(0).value("queryport", "")), "custom query port");
 
             store.save(java.util.Collections.emptyList());
             require(new FavoriteStore(file).load().isEmpty(), "removing all favorites");

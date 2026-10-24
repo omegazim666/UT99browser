@@ -25,6 +25,12 @@ source.
 - **Query all servers** manually checks the full startup list directly, one
   server at a time, with progress and a cancel option. It does not re-fetch
   the list from 333networks.
+- **Add favorite** opens an editor for a server description, address, game port,
+  and query port; long server details such as mutators wrap onto multiple lines.
+- In the Favorites tab, the same button becomes **Refresh all favorites** and
+  directly queries only the saved favorite servers.
+- Right-click a favorite and select **Edit favorite** to change its description,
+  auto-update setting, IP address, game port, or query port.
 - Shows the last direct-query result in the server and favorites tables. UT99's
   query port is the game port plus one; a server that does not expose this query
   port will not return live status.
@@ -43,4 +49,6 @@ source.
 - Right-click a server in the main list to refresh it directly or copy its
   IP:game-port address. Selecting a server or clicking the selected row again
   continues to refresh its live status.
+- Server admin email addresses and homepages appear as clickable links in the
+  server details table; email addresses display without the `mailto:` prefix.
 Direct UT99 status queries currently require an IPv4 address.

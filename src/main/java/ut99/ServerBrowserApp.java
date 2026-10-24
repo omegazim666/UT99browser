@@ -2,6 +2,7 @@ package ut99;
 
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
@@ -12,6 +13,7 @@ import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTabbedPane;
 import javax.swing.JTable;
+import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
 import javax.swing.SwingConstants;
@@ -20,6 +22,7 @@ import javax.swing.SwingWorker;
 import javax.swing.Timer;
 import javax.swing.UIManager;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableCellRenderer;
 import javax.swing.table.TableRowSorter;
 import javax.swing.SortOrder;
 import javax.swing.RowSorter;
@@ -30,12 +33,16 @@ import javax.swing.event.TableColumnModelListener;
 import javax.imageio.ImageIO;
 import java.awt.datatransfer.StringSelection;
 import java.awt.BorderLayout;
+import java.awt.Component;
 import java.awt.Desktop;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridLayout;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
 import java.awt.Image;
+import java.awt.Insets;
 import java.awt.Toolkit;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
@@ -62,7 +69,7 @@ public final class ServerBrowserApp {
     private static final int MAX_SERVER_RESULTS = 1000;
     private static final Path GAME_LOGO_PATH = Path.of("src", "img", "Giblogo-mirror.gif");
     private static final Path DISCORD_ICON_PATH = Path.of("src", "img", "discord.png");
-    private static final URI DISCORD_INVITE = URI.create("https://discord.com/invite/5AG6Zj96PG");
+    private static final URI DISCORD_INVITE = URI.create("https://discord.gibblets.com/");
     private static final Preferences COLUMN_PREFERENCES =
             Preferences.userNodeForPackage(ServerBrowserApp.class).node("column-widths");
 
@@ -115,6 +122,7 @@ public final class ServerBrowserApp {
     private final JTable playerTable = new JTable(playerModel);
     private final JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
     private final JButton searchButton = new JButton("Search");
+    private final JButton addFavoriteButton = new JButton("Add favorite");
     private final JButton pingButton = new JButton("Refresh server");
     private final JButton queryAllButton = new JButton("Query all servers");
     private SwingWorker<Void, ServerQueryUpdate> bulkQueryWorker;
@@ -182,6 +190,38 @@ public final class ServerBrowserApp {
         });
         installSelectedServerRefresh(favoriteTable, favorites);
         detailTable.setAutoCreateRowSorter(false);
+        detailTable.getColumnModel().getColumn(1).setCellRenderer(new WrappedTextRenderer());
+        detailTable.getModel().addTableModelListener(event ->
+                SwingUtilities.invokeLater(this::adjustDetailRowHeights));
+        detailTable.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent event) {
+                int row = detailTable.rowAtPoint(event.getPoint());
+                int column = detailTable.columnAtPoint(event.getPoint());
+                if (row >= 0 && column == 1) {
+                    String key = String.valueOf(detailTable.getValueAt(row, 0));
+                    String value = String.valueOf(detailTable.getValueAt(row, column));
+                    openServerDetailLink(key, value);
+                }
+            }
+        });
+        detailTable.addMouseMotionListener(new MouseAdapter() {
+            @Override
+            public void mouseMoved(MouseEvent event) {
+                int row = detailTable.rowAtPoint(event.getPoint());
+                int column = detailTable.columnAtPoint(event.getPoint());
+                String key = row >= 0 ? String.valueOf(detailTable.getValueAt(row, 0)) : "";
+                detailTable.setCursor(column == 1 && isLinkDetail(key)
+                        ? java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+                        : java.awt.Cursor.getDefaultCursor());
+            }
+        });
+        detailTable.addComponentListener(new ComponentAdapter() {
+            @Override
+            public void componentResized(ComponentEvent event) {
+                adjustDetailRowHeights();
+            }
+        });
         playerTable.setAutoCreateRowSorter(false);
         configureColumnWidths(serverTable, "servers", new int[]{245, 50, 140, 105, 50, 115, 100});
         configureColumnWidths(favoriteTable, "favorites", new int[]{245, 50, 140, 105, 50, 115, 100});
@@ -201,7 +241,11 @@ public final class ServerBrowserApp {
         JTabbedPane serverTabs = new JTabbedPane();
         serverTabs.addTab("Servers", serverPanel);
         JPanel favoritesPanel = new JPanel(new BorderLayout(4, 4));
-        favoritesPanel.add(new JLabel("Right-click a server to remove it from favorites"), BorderLayout.NORTH);
+        JPanel favoritesHeader = new JPanel(new BorderLayout(8, 0));
+        favoritesHeader.add(new JLabel("Right-click a server to remove it from favorites"),
+                BorderLayout.CENTER);
+        favoritesHeader.add(addFavoriteButton, BorderLayout.EAST);
+        favoritesPanel.add(favoritesHeader, BorderLayout.NORTH);
         favoritesPanel.add(new JScrollPane(favoriteTable), BorderLayout.CENTER);
         serverTabs.addTab("Favorites", favoritesPanel);
         serverTabs.addChangeListener(event -> {
@@ -259,6 +303,7 @@ public final class ServerBrowserApp {
         copyAddressButton.setToolTipText("Copy the selected server IP and game port");
         copyAddressButton.addActionListener(event -> copySelectedAddress());
         searchButton.addActionListener(this::search);
+        addFavoriteButton.addActionListener(event -> addFavoriteManually());
         pingButton.addActionListener(event -> {
             if (selectedServer != null) {
                 loadServerStatus(selectedServer);
@@ -285,7 +330,6 @@ public final class ServerBrowserApp {
         searchControls.add(searchField);
         searchControls.add(searchButton);
         searchControls.add(queryAllButton);
-        searchControls.add(new JLabel("(searches the server list loaded at startup)"));
         JButton aboutButton = new JButton("About");
         aboutButton.addActionListener(event -> showAboutDialog());
         toolbar.add(searchControls, BorderLayout.WEST);
@@ -316,6 +360,9 @@ public final class ServerBrowserApp {
             @Override
             public void columnMarginChanged(ChangeEvent event) {
                 scheduleLayoutSave();
+                if (table == detailTable) {
+                    SwingUtilities.invokeLater(ServerBrowserApp.this::adjustDetailRowHeights);
+                }
             }
 
             @Override
@@ -335,6 +382,46 @@ public final class ServerBrowserApp {
             public void columnSelectionChanged(ListSelectionEvent event) {
             }
         });
+    }
+
+    private void adjustDetailRowHeights() {
+        if (detailTable.getColumnModel().getColumnCount() < 2) {
+            return;
+        }
+        int valueColumnWidth = detailTable.getColumnModel().getColumn(1).getWidth()
+                - detailTable.getIntercellSpacing().width;
+        for (int row = 0; row < detailTable.getRowCount(); row++) {
+            Component renderer = detailTable.prepareRenderer(
+                    detailTable.getCellRenderer(row, 1), row, 1);
+            renderer.setSize(Math.max(1, valueColumnWidth), Short.MAX_VALUE);
+            int height = Math.max(detailTable.getRowHeight(),
+                    renderer.getPreferredSize().height + detailTable.getRowMargin());
+            if (detailTable.getRowHeight(row) != height) {
+                detailTable.setRowHeight(row, height);
+            }
+        }
+    }
+
+    private static final class WrappedTextRenderer extends JTextArea implements TableCellRenderer {
+        WrappedTextRenderer() {
+            setLineWrap(true);
+            setWrapStyleWord(true);
+            setOpaque(true);
+            setBorder(BorderFactory.createEmptyBorder(2, 4, 2, 4));
+        }
+
+        @Override
+        public Component getTableCellRendererComponent(JTable table, Object value, boolean selected,
+                                                        boolean focused, int row, int column) {
+            setText(value == null ? "" : value.toString());
+            boolean hyperlink = column == 1 && row < table.getRowCount()
+                    && isLinkDetail(String.valueOf(table.getValueAt(row, 0)));
+            setFont(table.getFont());
+            setForeground(selected ? table.getSelectionForeground()
+                    : hyperlink ? new java.awt.Color(0, 80, 180) : table.getForeground());
+            setBackground(selected ? table.getSelectionBackground() : table.getBackground());
+            return this;
+        }
     }
 
     private void scheduleLayoutSave() {
@@ -758,6 +845,16 @@ public final class ServerBrowserApp {
                 server.fields.put(key, value);
             }
         }
+        ServerEntry favorite = findFavorite(server);
+        if (favorite != null
+                && Boolean.parseBoolean(favorite.value("autoUpdateDescription", "true"))) {
+            String hostname = fields.get("hostname");
+            if (hostname != null && !hostname.isBlank()
+                    && !hostname.equals(favorite.value("favoriteDescription", ""))) {
+                favorite.fields.put("favoriteDescription", hostname);
+                persistFavoriteChanges();
+            }
+        }
         updateServerRow(currentServers, serverModel, server);
         updateServerRow(favorites, favoriteModel, server);
     }
@@ -767,7 +864,11 @@ public final class ServerBrowserApp {
             ServerEntry server = source.get(row);
             if (server.address().equalsIgnoreCase(updatedServer.address())) {
                 server.fields.putAll(updatedServer.fields);
-                model.setValueAt(server.value("hostname", "Unnamed server"), row, 0);
+                model.setValueAt(model == favoriteModel
+                                ? server.value("favoriteDescription",
+                                        server.value("hostname", "Unnamed server"))
+                                : server.value("hostname", "Unnamed server"),
+                        row, 0);
                 model.setValueAt(server.value("numplayers", "0") + " / " + server.value("maxplayers", "?"),
                         row, 1);
                 model.setValueAt(server.value("mapname", ""), row, 2);
@@ -806,7 +907,8 @@ public final class ServerBrowserApp {
                 .filter(entry -> !entry.getKey().matches(".*_\\d+$"))
                 .filter(entry -> !isUpdateTimestampField(entry.getKey()))
                 .sorted(Map.Entry.comparingByKey())
-                .forEach(entry -> detailModel.addRow(new Object[]{entry.getKey(), entry.getValue()}));
+                .forEach(entry -> detailModel.addRow(new Object[]{
+                        entry.getKey(), displayServerDetailValue(entry.getKey(), entry.getValue())}));
 
         Map<Integer, Map<String, String>> players = new java.util.TreeMap<>();
         for (Map.Entry<String, String> entry : details.entrySet()) {
@@ -868,6 +970,50 @@ public final class ServerBrowserApp {
         return normalized.startsWith("dt") || normalized.contains("update");
     }
 
+    private static boolean isLinkDetail(String key) {
+        return "adminemail".equalsIgnoreCase(key) || "homepage".equalsIgnoreCase(key);
+    }
+
+    private static String displayServerDetailValue(String key, String value) {
+        if ("adminemail".equalsIgnoreCase(key) && value.regionMatches(true, 0, "mailto:", 0, 7)) {
+            return value.substring(7);
+        }
+        return value;
+    }
+
+    private void openServerDetailLink(String key, String displayedValue) {
+        if (!isLinkDetail(key) || displayedValue == null || displayedValue.isBlank()) {
+            return;
+        }
+        try {
+            URI target;
+            if ("adminemail".equalsIgnoreCase(key)) {
+                target = URI.create("mailto:" + displayedValue.trim());
+                if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.MAIL)) {
+                    throw new IOException("Opening email links is not supported on this system.");
+                }
+                Desktop.getDesktop().mail(target);
+            } else {
+                String homepage = displayedValue.trim();
+                if (!homepage.matches("(?i)^https?://.*")) {
+                    homepage = "https://" + homepage;
+                }
+                target = URI.create(homepage);
+                if (!"http".equalsIgnoreCase(target.getScheme())
+                        && !"https".equalsIgnoreCase(target.getScheme())) {
+                    throw new IOException("Only HTTP and HTTPS homepage links are supported.");
+                }
+                if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                    throw new IOException("Opening web links is not supported on this system.");
+                }
+                Desktop.getDesktop().browse(target);
+            }
+        } catch (IOException | IllegalArgumentException | UnsupportedOperationException e) {
+            JOptionPane.showMessageDialog(frame, "Could not open the server link: " + e.getMessage(),
+                    "Unable to open link", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
     private void setBusy(boolean busy, String message) {
         searchButton.setEnabled(!busy);
         searchField.setEnabled(!busy);
@@ -921,6 +1067,11 @@ public final class ServerBrowserApp {
                     menu.addSeparator();
                 }
                 if (favoritesView || isFavorite) {
+                    if (favoritesView) {
+                        javax.swing.JMenuItem edit = new javax.swing.JMenuItem("Edit favorite");
+                        edit.addActionListener(action -> editFavorite(server));
+                        menu.add(edit);
+                    }
                     javax.swing.JMenuItem remove = new javax.swing.JMenuItem("Remove from favorites");
                     remove.addActionListener(action -> removeFavorite(server));
                     menu.add(remove);
@@ -947,10 +1098,205 @@ public final class ServerBrowserApp {
         if (containsFavorite(server)) {
             return;
         }
-        favorites.add(server);
+        Map<String, Object> favoriteFields = new LinkedHashMap<>(server.fields);
+        favoriteFields.put("favoriteDescription", server.value("hostname", "Unnamed server"));
+        favoriteFields.put("autoUpdateDescription", "true");
+        ServerEntry favorite = new ServerEntry(favoriteFields);
+        favorites.add(favorite);
         if (!saveFavorites()) {
-            favorites.remove(server);
+            favorites.remove(favorite);
             displayServersInModel(favorites, favoriteModel);
+        }
+    }
+
+    private void addFavoriteManually() {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("ip", "");
+        fields.put("hostport", "");
+        fields.put("queryport", "");
+        fields.put("hostname", "");
+        fields.put("favoriteDescription", "");
+        fields.put("autoUpdateDescription", "true");
+        editFavorite(new ServerEntry(fields), true);
+    }
+
+    private void editFavorite(ServerEntry server) {
+        editFavorite(server, false);
+    }
+
+    private void editFavorite(ServerEntry server, boolean addingFavorite) {
+        JTextField descriptionField = new JTextField(
+                server.value("favoriteDescription", server.value("hostname", "")), 34);
+        JCheckBox autoUpdateDescription = new JCheckBox("Auto-Update Description",
+                Boolean.parseBoolean(server.value("autoUpdateDescription", "true")));
+        JTextField ipField = new JTextField(server.value("ip", ""), 18);
+        JTextField gamePortField = new JTextField(server.value("hostport", ""), 7);
+        JTextField queryPortField = new JTextField(server.value("queryport",
+                defaultQueryPort(server)), 7);
+
+        JPanel fields = new JPanel(new GridBagLayout());
+        addFavoriteEditorRow(fields, 0, "Description", descriptionField);
+        GridBagConstraints checkboxConstraints = new GridBagConstraints();
+        checkboxConstraints.gridx = 0;
+        checkboxConstraints.gridy = 1;
+        checkboxConstraints.gridwidth = 2;
+        checkboxConstraints.anchor = GridBagConstraints.WEST;
+        checkboxConstraints.insets = new Insets(4, 4, 4, 4);
+        fields.add(autoUpdateDescription, checkboxConstraints);
+        addFavoriteEditorRow(fields, 2, "Server IP Address", ipField);
+        addFavoriteEditorRow(fields, 3, "Server Port Number", gamePortField);
+        addFavoriteEditorRow(fields, 4, "Query Port Number", queryPortField);
+
+        JButton okButton = new JButton("OK");
+        JButton closeButton = new JButton("Close");
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        buttons.add(okButton);
+        buttons.add(closeButton);
+
+        JDialog dialog = new JDialog(frame, "Edit Favorite", true);
+        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+        JPanel content = new JPanel(new BorderLayout(6, 8));
+        content.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new java.awt.Color(90, 120, 155)),
+                BorderFactory.createEmptyBorder(8, 8, 8, 8)));
+        content.add(fields, BorderLayout.CENTER);
+        content.add(buttons, BorderLayout.SOUTH);
+        dialog.setContentPane(content);
+
+        okButton.addActionListener(event -> {
+            String ip = ipField.getText().trim();
+            String gamePort = gamePortField.getText().trim();
+            String queryPort = queryPortField.getText().trim();
+            String validationError = validateFavoriteAddress(ip, gamePort, queryPort);
+            if (validationError != null) {
+                JOptionPane.showMessageDialog(dialog, validationError,
+                        "Invalid favorite server", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            if (addingFavorite && containsFavoriteAddress(ip, gamePort)) {
+                JOptionPane.showMessageDialog(dialog,
+                        "This server is already in Favorites.",
+                        "Favorite already exists", JOptionPane.INFORMATION_MESSAGE);
+                return;
+            }
+            String oldAddress = server.address();
+            boolean wasSelected = selectedServer == server;
+            Map<String, Object> previousFields = new LinkedHashMap<>(server.fields);
+            server.fields.put("favoriteDescription", descriptionField.getText().trim());
+            server.fields.put("autoUpdateDescription",
+                    Boolean.toString(autoUpdateDescription.isSelected()));
+            server.fields.put("ip", ip);
+            server.fields.put("hostport", gamePort);
+            server.fields.put("queryport", queryPort);
+            if (addingFavorite) {
+                favorites.add(server);
+            }
+            if (saveFavorites()) {
+                dialog.dispose();
+                Long previousRequestId = pingRequestIds.get(oldAddress);
+                if (previousRequestId != null) {
+                    pingRequestIds.put(oldAddress, previousRequestId + 1);
+                }
+                if (wasSelected) {
+                    int modelRow = favorites.indexOf(server);
+                    int viewRow = favoriteTable.convertRowIndexToView(modelRow);
+                    if (viewRow >= 0) {
+                        favoriteTable.setRowSelectionInterval(viewRow, viewRow);
+                    }
+                }
+            } else {
+                if (addingFavorite) {
+                    favorites.remove(server);
+                }
+                server.fields.clear();
+                server.fields.putAll(previousFields);
+            }
+        });
+        closeButton.addActionListener(event -> dialog.dispose());
+        dialog.getRootPane().setDefaultButton(okButton);
+        dialog.pack();
+        dialog.setResizable(false);
+        dialog.setLocationRelativeTo(frame);
+        dialog.setVisible(true);
+    }
+
+    private static void addFavoriteEditorRow(JPanel panel, int row, String label, JTextField field) {
+        GridBagConstraints labelConstraints = new GridBagConstraints();
+        labelConstraints.gridx = 0;
+        labelConstraints.gridy = row;
+        labelConstraints.anchor = GridBagConstraints.WEST;
+        labelConstraints.insets = new Insets(4, 4, 4, 10);
+        panel.add(new JLabel(label), labelConstraints);
+
+        GridBagConstraints fieldConstraints = new GridBagConstraints();
+        fieldConstraints.gridx = 1;
+        fieldConstraints.gridy = row;
+        fieldConstraints.weightx = 1;
+        fieldConstraints.fill = GridBagConstraints.HORIZONTAL;
+        fieldConstraints.insets = new Insets(4, 4, 4, 4);
+        panel.add(field, fieldConstraints);
+    }
+
+    private static String defaultQueryPort(ServerEntry server) {
+        try {
+            return Integer.toString(Integer.parseInt(server.value("hostport", "")) + 1);
+        } catch (NumberFormatException e) {
+            return "";
+        }
+    }
+
+    private static String validateFavoriteAddress(String ip, String gamePort, String queryPort) {
+        String[] octets = ip.split("\\.", -1);
+        if (octets.length != 4) {
+            return "Enter a valid IPv4 address.";
+        }
+        for (String octet : octets) {
+            if (!octet.matches("\\d{1,3}") || Integer.parseInt(octet) > 255) {
+                return "Enter a valid IPv4 address.";
+            }
+        }
+        if (!isValidPort(gamePort)) {
+            return "Game port must be a number between 1 and 65535.";
+        }
+        if (!isValidPort(queryPort)) {
+            return "Query port must be a number between 1 and 65535.";
+        }
+        return null;
+    }
+
+    private static boolean isValidPort(String value) {
+        if (!value.matches("\\d{1,5}")) {
+            return false;
+        }
+        int port = Integer.parseInt(value);
+        return port >= 1 && port <= 65535;
+    }
+
+    private boolean containsFavoriteAddress(String ip, String gamePort) {
+        String address = ip + ":" + gamePort;
+        for (ServerEntry favorite : favorites) {
+            if (favorite.address().equalsIgnoreCase(address)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private ServerEntry findFavorite(ServerEntry server) {
+        for (ServerEntry favorite : favorites) {
+            if (favorite.address().equalsIgnoreCase(server.address())) {
+                return favorite;
+            }
+        }
+        return null;
+    }
+
+    private void persistFavoriteChanges() {
+        try {
+            favoriteStore.save(favorites);
+            displayServersInModel(favorites, favoriteModel);
+        } catch (IOException e) {
+            showError("Could not save favorites: " + e.getMessage());
         }
     }
 
@@ -992,7 +1338,9 @@ public final class ServerBrowserApp {
         model.setRowCount(0);
         for (ServerEntry server : servers) {
             model.addRow(new Object[]{
-                    server.value("hostname", "Unnamed server"),
+                    model == favoriteModel
+                            ? server.value("favoriteDescription", server.value("hostname", "Unnamed server"))
+                            : server.value("hostname", "Unnamed server"),
                     server.value("numplayers", "0") + " / " + server.value("maxplayers", "?"),
                     server.value("mapname", ""),
                     server.value("gametype", ""),
