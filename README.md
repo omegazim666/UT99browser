@@ -5,11 +5,12 @@ A lightweight Java 11 desktop browser for Unreal Tournament servers listed by
 
 ## Run
 
-Install a Java 11 or newer JDK (a JRE alone is not enough), then double-click
-`run.bat` or run it from a terminal. The script compiles the app into `out` and
-launches the Swing UI. If `javac` is not found, add the JDK's `bin` directory to
-`PATH` or set `JAVA_HOME` to the JDK installation folder. The launcher displays
-a popup with a Java download button when Java is missing.
+For end users, download and extract the standalone Windows package, then run
+`UT99 Browser.bat`; it includes its own Java runtime and does not require Java
+to be installed. To build the package from source, install a Java 11 or newer
+JDK and run `package-windows.bat`. This creates
+`dist\UT99_Browser-B1.2.zip`. Developers can still use `run.bat` to compile and
+run the app from source.
 
 ## Features
 
