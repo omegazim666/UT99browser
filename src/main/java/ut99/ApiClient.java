@@ -40,13 +40,17 @@ final class ApiClient {
     }
 
     ServerPage fetchServers(String query, int resultLimit) throws Exception {
+        return fetchServers(query, resultLimit, false);
+    }
+
+    ServerPage fetchServers(String query, int resultLimit, boolean forceRefresh) throws Exception {
         StringBuilder url = new StringBuilder(API_ROOT)
                 .append("?r=").append(resultLimit)
                 .append("&p=1");
         if (!query.isEmpty()) {
             url.append("&q=").append(URLEncoder.encode(query, StandardCharsets.UTF_8.name()));
         }
-        Object response = request(url.toString());
+        Object response = request(url.toString(), forceRefresh);
         if (!(response instanceof List) || ((List<?>) response).size() < 2) {
             throw apiError(response);
         }
@@ -105,10 +109,14 @@ final class ApiClient {
     }
 
     private synchronized Object request(String url) throws Exception {
+        return request(url, false);
+    }
+
+    private synchronized Object request(String url, boolean forceRefresh) throws Exception {
         long now = System.currentTimeMillis();
         Long lastRequest = lastRequestTimes.get(url);
         Object cachedResponse = responseCache.get(url);
-        if (lastRequest != null && now - lastRequest < QUERY_COOLDOWN_MILLIS) {
+        if (!forceRefresh && lastRequest != null && now - lastRequest < QUERY_COOLDOWN_MILLIS) {
             if (cachedResponse != null) {
                 return cachedResponse;
             }

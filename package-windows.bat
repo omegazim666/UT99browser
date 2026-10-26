@@ -47,6 +47,8 @@ copy /y version.txt "%PACKAGE_DIR%\version.txt" >nul
 if errorlevel 1 exit /b 1
 copy /y run-standalone.bat "%PACKAGE_DIR%\UT99 Browser.bat" >nul
 if errorlevel 1 exit /b 1
+copy /y update-windows.ps1 "%PACKAGE_DIR%\update-windows.ps1" >nul
+if errorlevel 1 exit /b 1
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path '%PACKAGE_DIR%\*' -DestinationPath '%ARCHIVE_PATH%' -Force"
 if errorlevel 1 exit /b 1

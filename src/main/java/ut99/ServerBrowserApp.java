@@ -79,11 +79,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Comparator;
 import java.util.Optional;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
 
 public final class ServerBrowserApp {
     private static final int MAX_SERVER_RESULTS = 1000;
+    private static final int MAX_CONCURRENT_SERVER_QUERIES = 64;
     private static final Path GAME_LOGO_PATH = Path.of("src", "img", "Giblogo-mirror.gif");
     private static final Path DISCORD_ICON_PATH = Path.of("src", "img", "discord.png");
     private static final URI DISCORD_INVITE = URI.create("https://discord.gibblets.com/");
@@ -131,7 +139,7 @@ public final class ServerBrowserApp {
     private final Map<String, String> pingStatuses = new HashMap<>();
     private final Map<String, Long> pingRequestIds = new HashMap<>();
     private final DefaultTableModel serverModel = new DefaultTableModel(
-            new Object[]{"Server", "Players", "Map", "Game type", "Country", "Address", "Live status"}, 0) {
+            new Object[]{"Server", "Players", "Map", "Game type", "Country", "Address", "Ping"}, 0) {
         @Override
         public boolean isCellEditable(int row, int column) {
             return false;
@@ -139,7 +147,7 @@ public final class ServerBrowserApp {
     };
     private final JTable serverTable = new JTable(serverModel);
     private final DefaultTableModel favoriteModel = new DefaultTableModel(
-            new Object[]{"Server", "Players", "Map", "Game type", "Country", "Address", "Live status"}, 0) {
+            new Object[]{"Server", "Players", "Map", "Game type", "Country", "Address", "Ping"}, 0) {
         @Override
         public boolean isCellEditable(int row, int column) {
             return false;
@@ -166,11 +174,13 @@ public final class ServerBrowserApp {
     private final JButton searchButton = new JButton("Search");
     private final JButton addFavoriteButton = new JButton("Add favorite");
     private final JButton pingButton = new JButton("Refresh server");
-    private final JButton queryAllButton = new JButton("Query all servers");
+    private final JButton queryAllButton = new JButton("Refresh All Servers");
+    private final JButton fetchServerListButton = new JButton("Fetch new server list");
     private final Map<Component, ComponentColors> defaultComponentColors = new IdentityHashMap<>();
     private final Map<Theme, JCheckBoxMenuItem> themeMenuItems = new EnumMap<>(Theme.class);
     private SwingWorker<Void, ServerQueryUpdate> bulkQueryWorker;
     private volatile boolean bulkQueryStopRequested;
+    private boolean serverListLoading;
     private Theme activeTheme = Theme.DEFAULT;
     private boolean favoritesTabSelected;
     private String searchQuery = "";
@@ -312,6 +322,7 @@ public final class ServerBrowserApp {
         serverTabs.addTab("Favorites", favoritesPanel);
         serverTabs.addChangeListener(event -> {
             favoritesTabSelected = serverTabs.getSelectedIndex() == 1;
+            fetchServerListButton.setVisible(!favoritesTabSelected);
             updateBulkQueryButton();
             JTable activeTable = favoritesTabSelected ? favoriteTable : serverTable;
             if (activeTable.getSelectedRow() >= 0) {
@@ -383,6 +394,7 @@ public final class ServerBrowserApp {
                 queryAllButton.setEnabled(false);
             }
         });
+        fetchServerListButton.addActionListener(event -> loadServers(true));
         searchField.addActionListener(this::search);
     }
 
@@ -393,6 +405,7 @@ public final class ServerBrowserApp {
         searchControls.add(searchField);
         searchControls.add(searchButton);
         searchControls.add(queryAllButton);
+        searchControls.add(fetchServerListButton);
         toolbar.add(searchControls, BorderLayout.WEST);
         return toolbar;
     }
@@ -579,7 +592,7 @@ public final class ServerBrowserApp {
             splitPane.setDividerLocation(0.67);
         }
         loadFavorites();
-        loadServers();
+        loadServers(false);
     }
 
     private void checkForUpdates() {
@@ -594,14 +607,13 @@ public final class ServerBrowserApp {
                 try {
                     Optional<UpdateChecker.Release> update = get();
                     if (update.isPresent()) {
-                        UpdateChecker.Release release = update.get();
-                        int choice = JOptionPane.showConfirmDialog(frame,
-                                "Version " + release.version + " is available. "
-                                        + "Would you like to open the GitHub release page?",
-                                "Update available", JOptionPane.YES_NO_OPTION,
-                                JOptionPane.INFORMATION_MESSAGE);
-                        if (choice == JOptionPane.YES_OPTION) {
-                            openReleasePage(release.url);
+                        if (!UpdateInstaller.isSupported()) {
+                            JOptionPane.showMessageDialog(frame,
+                                    "Version " + update.get().version + " is available, but automatic "
+                                            + "updates require the standalone Windows package.",
+                                    "Update available", JOptionPane.INFORMATION_MESSAGE);
+                        } else {
+                            downloadAndInstallUpdate(update.get());
                         }
                     }
                 } catch (InterruptedException e) {
@@ -614,16 +626,48 @@ public final class ServerBrowserApp {
         }.execute();
     }
 
-    private void openReleasePage(URI releaseUrl) {
-        try {
-            if (!Desktop.isDesktopSupported()) {
-                throw new IOException("This system cannot open web links.");
+    private void downloadAndInstallUpdate(UpdateChecker.Release release) {
+        statusLabel.setText("Downloading update " + release.version + "...");
+        new SwingWorker<Path, Void>() {
+            @Override
+            protected Path doInBackground() throws Exception {
+                return new UpdateChecker().downloadUpdate(release);
             }
-            Desktop.getDesktop().browse(releaseUrl);
-        } catch (IOException | UnsupportedOperationException e) {
-            JOptionPane.showMessageDialog(frame, "Could not open the GitHub release page: "
-                            + e.getMessage(), "Unable to open link", JOptionPane.ERROR_MESSAGE);
-        }
+
+            @Override
+            protected void done() {
+                Path archive = null;
+                boolean restartStarted = false;
+                try {
+                    archive = get();
+                    JOptionPane.showMessageDialog(frame,
+                            "Version " + release.version + " has been downloaded. "
+                                    + "Click OK to restart the application and finish installing the update.",
+                            "Update downloaded", JOptionPane.INFORMATION_MESSAGE);
+                    UpdateInstaller.start(archive, ProcessHandle.current().pid());
+                    restartStarted = true;
+                    frame.dispose();
+                    System.exit(0);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    showError("The update download was interrupted.");
+                } catch (java.util.concurrent.ExecutionException e) {
+                    Throwable cause = e.getCause();
+                    showError("Could not download the update: "
+                            + (cause.getMessage() == null ? cause.toString() : cause.getMessage()));
+                } catch (IOException e) {
+                    showError("Could not start the update installer: " + e.getMessage());
+                } finally {
+                    if (archive != null && !restartStarted) {
+                        try {
+                            Files.deleteIfExists(archive);
+                        } catch (IOException e) {
+                            System.err.println("Could not remove temporary update archive: " + e.getMessage());
+                        }
+                    }
+                }
+            }
+        }.execute();
     }
 
     private void search(ActionEvent event) {
@@ -637,16 +681,22 @@ public final class ServerBrowserApp {
                 currentServers.size(), totalServers));
     }
 
-    private void loadServers() {
+    private void loadServers(boolean forceRefresh) {
+        if (serverListLoading || bulkQueryWorker != null) {
+            return;
+        }
+        serverListLoading = true;
+        updateBulkQueryButton();
         setBusy(true, "Loading server list...");
         new SwingWorker<ApiClient.ServerPage, Void>() {
             @Override
             protected ApiClient.ServerPage doInBackground() throws Exception {
-                return apiClient.fetchServers(searchQuery, MAX_SERVER_RESULTS);
+                return apiClient.fetchServers("", MAX_SERVER_RESULTS, forceRefresh);
             }
 
             @Override
             protected void done() {
+                boolean loaded = false;
                 try {
                     ApiClient.ServerPage result = get();
                     totalServers = result.total;
@@ -655,11 +705,16 @@ public final class ServerBrowserApp {
                     displayServers(filterServers(searchQuery));
                     statusLabel.setText(String.format("Showing %,d of %,d servers | %,d players",
                             currentServers.size(), totalServers, result.players));
+                    loaded = true;
                 } catch (Exception e) {
                     showError(messageFor(e));
                 } finally {
+                    serverListLoading = false;
                     updateBulkQueryButton();
                     setBusy(false, null);
+                }
+                if (loaded) {
+                    queryServers(allServers, "servers");
                 }
             }
         }.execute();
@@ -807,7 +862,7 @@ public final class ServerBrowserApp {
                 try {
                     GameServerQuery.Result result = get();
                     applyServerStatus(server, result.fields);
-                    pingStatuses.put(server.address(), "Online (" + result.roundTripMillis + " ms)");
+                    pingStatuses.put(server.address(), result.roundTripMillis + " ms");
                     updatePingStatus(server);
                     if (selectedServer == server) {
                         displayDetails(server, result.fields, result.roundTripMillis);
@@ -818,7 +873,7 @@ public final class ServerBrowserApp {
                                 + " in " + result.roundTripMillis + " ms");
                     }
                 } catch (Exception e) {
-                    pingStatuses.put(server.address(), "No status response");
+                    pingStatuses.put(server.address(), "No Response");
                     updatePingStatus(server);
                     if (selectedServer == server) {
                         String error = messageFor(e);
@@ -834,11 +889,13 @@ public final class ServerBrowserApp {
     }
 
     private void updateBulkQueryButton() {
+        fetchServerListButton.setEnabled(!serverListLoading && bulkQueryWorker == null);
         if (bulkQueryWorker != null) {
             return;
         }
-        queryAllButton.setText(favoritesTabSelected ? "Refresh all favorites" : "Query all servers");
-        queryAllButton.setEnabled(favoritesTabSelected ? !favorites.isEmpty() : !allServers.isEmpty());
+        queryAllButton.setText("Refresh All Servers");
+        queryAllButton.setEnabled(!serverListLoading
+                && (favoritesTabSelected ? !favorites.isEmpty() : !allServers.isEmpty()));
     }
 
     private void queryServers(List<ServerEntry> source, String listName) {
@@ -852,6 +909,7 @@ public final class ServerBrowserApp {
         int total = serversToQuery.size();
         queryAllButton.setText("Cancel queries");
         pingButton.setEnabled(false);
+        fetchServerListButton.setEnabled(false);
         bulkQueryWorker = new SwingWorker<Void, ServerQueryUpdate>() {
             private int completed;
             private int successful;
@@ -859,25 +917,54 @@ public final class ServerBrowserApp {
 
             @Override
             protected Void doInBackground() {
-                int attempted = 0;
-                for (ServerEntry server : serversToQuery) {
-                    if (bulkQueryStopRequested) {
-                        break;
-                    }
-                    try {
-                        publish(new ServerQueryUpdate(server, GameServerQuery.query(server, 1000), null));
-                    } catch (Exception e) {
-                        publish(new ServerQueryUpdate(server, null, messageFor(e)));
-                    }
-                    attempted++;
-                    if (attempted < total && !bulkQueryStopRequested) {
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
+                int threadCount = Math.min(MAX_CONCURRENT_SERVER_QUERIES, total);
+                ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+                CompletionService<ServerQueryUpdate> completion =
+                        new ExecutorCompletionService<>(executor);
+                List<Future<ServerQueryUpdate>> queries = new ArrayList<>();
+                Map<Future<ServerQueryUpdate>, ServerEntry> queryServers = new IdentityHashMap<>();
+                try {
+                    for (ServerEntry server : serversToQuery) {
+                        if (bulkQueryStopRequested) {
                             break;
                         }
+                        Future<ServerQueryUpdate> query = completion.submit(() -> {
+                            try {
+                                return new ServerQueryUpdate(server,
+                                        GameServerQuery.query(server, 1000), null);
+                            } catch (Exception e) {
+                                return new ServerQueryUpdate(server, null, messageFor(e));
+                            }
+                        });
+                        queries.add(query);
+                        queryServers.put(query, server);
                     }
+
+                    int remaining = queries.size();
+                    while (remaining > 0 && !bulkQueryStopRequested) {
+                        Future<ServerQueryUpdate> finished = completion.poll(100, TimeUnit.MILLISECONDS);
+                        if (finished != null) {
+                            ServerEntry server = queryServers.remove(finished);
+                            try {
+                                publish(finished.get());
+                            } catch (ExecutionException e) {
+                                publish(new ServerQueryUpdate(server, null,
+                                        messageFor(new IOException("Unexpected failure while querying server.",
+                                                e.getCause()))));
+                            }
+                            remaining--;
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    bulkQueryStopRequested = true;
+                } finally {
+                    if (bulkQueryStopRequested) {
+                        for (Future<ServerQueryUpdate> query : queries) {
+                            query.cancel(true);
+                        }
+                    }
+                    executor.shutdownNow();
                 }
                 return null;
             }
@@ -887,7 +974,7 @@ public final class ServerBrowserApp {
                 for (ServerQueryUpdate update : updates) {
                     if (update.result == null) {
                         failed++;
-                        pingStatuses.put(update.server.address(), "No status response");
+                        pingStatuses.put(update.server.address(), "No Response");
                         if (selectedServer == update.server) {
                             detailModel.setRowCount(0);
                             detailModel.addRow(new Object[]{"Live status", "Query failed: " + update.error});
@@ -895,8 +982,7 @@ public final class ServerBrowserApp {
                     } else {
                         successful++;
                         applyServerStatus(update.server, update.result.fields);
-                        pingStatuses.put(update.server.address(),
-                                "Online (" + update.result.roundTripMillis + " ms)");
+                        pingStatuses.put(update.server.address(), update.result.roundTripMillis + " ms");
                         if (selectedServer == update.server) {
                             displayDetails(update.server, update.result.fields, update.result.roundTripMillis);
                         }

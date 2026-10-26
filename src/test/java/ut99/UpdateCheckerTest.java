@@ -20,15 +20,23 @@ public final class UpdateCheckerTest {
     private static void parsesLatestRelease() throws IOException {
         UpdateChecker.Release release = UpdateChecker.parseRelease(
                 "{\"tag_name\":\"B1.6\","
-                        + "\"html_url\":\"https://github.com/omegazim666/UT99browser/releases/tag/B1.6\"}");
+                        + "\"assets\":[{\"name\":\"UT99_Browser-B1.6.zip\","
+                        + "\"browser_download_url\":\"https://github.com/omegazim666/UT99browser/"
+                        + "releases/download/B1.6/UT99_Browser-B1.6.zip\","
+                        + "\"digest\":\"sha256:187b5ddf73107f50a1c37ae8f4b0ff5f6cf922602b70d359636aef9d3b18b253\","
+                        + "\"size\":1234}]}");
         require("B1.6".equals(release.version), "release version");
-        require("github.com".equals(release.url.getHost()), "release URL host");
+        require("github.com".equals(release.downloadUrl.getHost()), "release URL host");
+        require(release.assetSize == 1234, "release asset size");
     }
 
     private static void rejectsInvalidReleaseData() {
-        expectInvalid("{\"tag_name\":\"v1.6\",\"html_url\":\"https://github.com/owner/repo\"}");
-        expectInvalid("{\"tag_name\":\"B1.6\",\"html_url\":\"https://example.com/release\"}");
-        expectInvalid("{\"tag_name\":\"B1.6\"}");
+        expectInvalid("{\"tag_name\":\"v1.6\",\"assets\":[]}");
+        expectInvalid("{\"tag_name\":\"B1.6\",\"assets\":[{\"name\":\"UT99_Browser-B1.6.zip\","
+                + "\"browser_download_url\":\"https://example.com/release\","
+                + "\"digest\":\"sha256:187b5ddf73107f50a1c37ae8f4b0ff5f6cf922602b70d359636aef9d3b18b253\","
+                + "\"size\":1234}]}");
+        expectInvalid("{\"tag_name\":\"B1.6\",\"assets\":[]}");
         expectInvalid("not json");
     }
 
