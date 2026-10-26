@@ -21,7 +21,7 @@ source.
   lists in either direction.
 - Favorites can be saved to a external file, shared and loaded by another user.
 - App automatically checks for latest version.
-- Live query for selected servers.
+
 
 
 
